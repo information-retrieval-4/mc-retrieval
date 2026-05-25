@@ -75,11 +75,30 @@ def build_block_mapping(voxel_series: pd.Series, max_types: int = 256):
     return mapping
 
 
-def remap_voxel(voxel_flat, mapping: dict) -> torch.LongTensor:
-    """Remap a flat voxel array using the block mapping and reshape to 32³."""
+def remap_voxel(voxel_flat, mapping: dict, crop_bbox: bool = True,
+                target_size: int = 32) -> torch.LongTensor:
+    """Remap a flat voxel array, optionally crop to bbox and resize to target³."""
     arr = np.asarray(voxel_flat, dtype=np.int64)
     remapped = np.array([mapping.get(v, 1) for v in arr], dtype=np.int64)
-    return torch.from_numpy(remapped).reshape(32, 32, 32)
+    vol = remapped.reshape(32, 32, 32)
+
+    if crop_bbox:
+        non_air = vol != 0
+        if non_air.any():
+            coords = np.argwhere(non_air)
+            mins = coords.min(axis=0)
+            maxs = coords.max(axis=0) + 1
+            cropped = vol[mins[0]:maxs[0], mins[1]:maxs[1], mins[2]:maxs[2]]
+
+            # nearest-neighbor resize to target³ (block IDs are categorical)
+            from scipy.ndimage import zoom
+            shape = cropped.shape
+            factors = (target_size / shape[0],
+                       target_size / shape[1],
+                       target_size / shape[2])
+            vol = zoom(cropped, factors, order=0)  # order=0 = nearest neighbor
+
+    return torch.from_numpy(vol.copy()).long()
 
 
 # ---------------------------------------------------------------------------
