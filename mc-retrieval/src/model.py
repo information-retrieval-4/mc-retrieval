@@ -115,7 +115,7 @@ class TextEncoder(nn.Module):
         """
         with torch.no_grad():
             text_feats = self.encode_text(texts)  # (B, text_hidden_dim)
-        text_feats = text_feats.to(next(self.project.parameters()).device)
+        text_feats = text_feats.to(next(self.project.parameters()).device).clone()
         x = self.project(text_feats)               # (B, embed_dim)
         return x
 
