@@ -141,6 +141,53 @@ def plot_embedding_space(text_embs, voxel_embs, categories, save_path="embedding
     print(f"Saved to {save_path}")
     plt.close()
 
+    return coords, top_cats, cat_colors, short_names
+
+
+def plot_per_category(coords, categories, top_cats, cat_colors, short_names,
+                      save_path="embedding_per_category.png"):
+    """Grid of small multiples: one category highlighted per subplot."""
+    all_cats = np.concatenate([categories, categories])
+    n_cats = len(top_cats)
+    cols = 4
+    rows = (n_cats + cols - 1) // cols
+
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows), facecolor="white")
+    axes = axes.flatten()
+
+    for i, cat in enumerate(top_cats):
+        ax = axes[i]
+        ax.set_facecolor("white")
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#ddd")
+
+        # gray background (all points)
+        ax.scatter(coords[:, 0], coords[:, 1],
+                   c="#e8e8e8", s=6, alpha=0.3, zorder=1)
+
+        # highlight this category
+        cat_mask = all_cats == cat
+        count = cat_mask.sum() // 2  # each item appears twice (text + voxel)
+        ax.scatter(coords[cat_mask, 0], coords[cat_mask, 1],
+                   c=cat_colors[cat], s=22, alpha=0.7, zorder=2,
+                   edgecolors="white", linewidths=0.3)
+
+        name = short_names.get(cat, cat)
+        ax.set_title(f"{name}  (n={count})", fontsize=13, fontweight="bold",
+                     color=cat_colors[cat])
+
+    # hide unused axes
+    for j in range(n_cats, len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle("Per-Category Embedding Clusters", fontsize=18,
+                 fontweight="bold", y=1.01)
+    plt.tight_layout(pad=1.5)
+    plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
+    print(f"Saved to {save_path}")
+    plt.close()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize embedding space")
@@ -160,8 +207,15 @@ def main():
 
     text_embs, voxel_embs, categories = extract_embeddings(model, test_loader, device)
     print(f"Extracted {len(text_embs)} embeddings (dim={text_embs.shape[1]})")
-    plot_embedding_space(text_embs, voxel_embs, categories, args.output)
+
+    coords, top_cats, cat_colors, short_names = \
+        plot_embedding_space(text_embs, voxel_embs, categories, args.output)
+
+    # per-category highlight grid
+    cat_path = args.output.replace(".png", "_per_category.png")
+    plot_per_category(coords, categories, top_cats, cat_colors, short_names, cat_path)
 
 
 if __name__ == "__main__":
     main()
+
