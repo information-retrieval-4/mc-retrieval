@@ -1,144 +1,100 @@
-"""Visualize MVM reconstruction at different mask ratios on sample voxels."""
+"""Visualize MVM reconstruction with 3D voxel rendering."""
 
 import argparse
+import colorsys
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-import matplotlib.gridspec as gridspec
+from matplotlib.colors import to_rgba
+import pandas as pd
 
 from pretrain import MaskedVoxelModel, VoxelOnlyDataset, create_mask
 from dataset import build_block_mapping
 from utils import load_config, set_seed, get_device
-import pandas as pd
 
 
-def make_block_colormap(n_blocks=256):
-    """Create a distinctive colormap for block types."""
-    np.random.seed(0)
-    # air = white, then random distinct colors
-    colors = [(1, 1, 1, 1)]  # block 0 = air = white
+def make_block_palette(n_blocks=256):
+    """Generate distinct colors for each block ID."""
+    colors = {0: (0, 0, 0, 0)}  # air = transparent
     for i in range(1, n_blocks):
-        hue = (i * 0.618033988749895) % 1.0  # golden ratio for spread
-        sat = 0.5 + 0.5 * ((i * 7) % 10) / 10
-        val = 0.6 + 0.4 * ((i * 3) % 10) / 10
-        # HSV to RGB
-        import colorsys
+        hue = (i * 0.618033988749895) % 1.0
+        sat = 0.45 + 0.35 * ((i * 7) % 10) / 10
+        val = 0.55 + 0.35 * ((i * 3) % 10) / 10
         r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
-        colors.append((r, g, b, 1))
-    return ListedColormap(colors)
+        colors[i] = (r, g, b, 1.0)
+    return colors
 
 
-def render_topdown(vol):
-    """Top-down view: color of highest non-air block at each (x, z)."""
-    # vol shape: (32, 32, 32) = (X, Y, Z)
-    # look down Y axis, find topmost non-air block
-    result = np.zeros((vol.shape[0], vol.shape[2]), dtype=vol.dtype)
-    for y in range(vol.shape[1] - 1, -1, -1):
-        layer = vol[:, y, :]
-        mask = (layer != 0) & (result == 0)
-        result[mask] = layer[mask]
-    return result
+def vol_to_colors(vol, palette):
+    """Convert block ID volume to RGBA color volume."""
+    shape = vol.shape
+    rgba = np.zeros((*shape, 4))
+    for bid, color in palette.items():
+        mask = vol == bid
+        if mask.any():
+            rgba[mask] = color
+    return rgba
 
 
-def render_side(vol):
-    """Side view (X-Y plane): color of first non-air block along Z."""
-    result = np.zeros((vol.shape[0], vol.shape[1]), dtype=vol.dtype)
-    for z in range(vol.shape[2] - 1, -1, -1):
-        layer = vol[:, :, z]
-        mask = (layer != 0) & (result == 0)
-        result[mask] = layer[mask]
-    return result
+def render_voxel_3d(ax, vol, palette, title="", elev=25, azim=135):
+    """Render a voxel grid on a 3D axis."""
+    filled = vol != 0
+    colors = vol_to_colors(vol, palette)
+
+    # add slight edge darkening for depth
+    edge_color = np.zeros((*vol.shape, 4))
+    edge_color[filled] = [0, 0, 0, 0.08]
+
+    ax.voxels(filled, facecolors=colors, edgecolors=edge_color, linewidth=0.1)
+    ax.set_title(title, fontsize=10, fontweight="bold", pad=2)
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_xlim(0, vol.shape[0])
+    ax.set_ylim(0, vol.shape[1])
+    ax.set_zlim(0, vol.shape[2])
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+    ax.set_box_aspect([1, 1, 1])
+    # lighten the pane backgrounds
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    ax.xaxis.pane.set_edgecolor((0.9, 0.9, 0.9, 0.5))
+    ax.yaxis.pane.set_edgecolor((0.9, 0.9, 0.9, 0.5))
+    ax.zaxis.pane.set_edgecolor((0.9, 0.9, 0.9, 0.5))
+    ax.grid(False)
 
 
 @torch.no_grad()
-def visualize_reconstruction(model, voxels_batch, device, save_path, cmap,
-                              mask_ratios=[0.1, 0.3, 0.5, 0.7, 0.9],
-                              n_samples=3):
-    """Visualize original → masked → reconstructed for several samples and ratios."""
-    model.eval()
-    voxels_batch = voxels_batch.to(device)
+def reconstruct(model, voxel, mask_ratio, device):
+    """Run MVM reconstruction at a given mask ratio."""
+    voxel = voxel.unsqueeze(0).to(device)
+    mask = create_mask(voxel, mask_ratio=mask_ratio)
+    masked = voxel.clone()
+    masked[mask] = model.mask_token_id
 
-    fig = plt.figure(figsize=(4 * len(mask_ratios), 4 * n_samples * 2), facecolor="white")
+    x = model.block_embedding(masked)
+    x = x.permute(0, 4, 1, 2, 3).contiguous()
+    e1 = model.enc1(x)
+    e2 = model.enc2(model.pool1(e1))
+    bn = model.bottleneck(model.pool2(e2))
+    d2 = model.up2(bn)
+    d2 = model.dec2(torch.cat([d2, e2], dim=1))
+    d1 = model.up1(d2)
+    d1 = model.dec1(torch.cat([d1, e1], dim=1))
+    logits = model.pred_head(d1)
+    recon = logits.argmax(dim=1)[0].cpu().numpy()
 
-    # for each sample, show two rows: top-down and side view
-    outer = gridspec.GridSpec(n_samples, 1, hspace=0.35, figure=fig)
-
-    for s in range(n_samples):
-        voxel = voxels_batch[s:s+1]  # (1, 32, 32, 32)
-        original = voxel[0].cpu().numpy()
-
-        inner = gridspec.GridSpecFromSubplotSpec(
-            2, len(mask_ratios) + 1,
-            subplot_spec=outer[s],
-            wspace=0.05, hspace=0.08,
-        )
-
-        # original column
-        ax = fig.add_subplot(inner[0, 0])
-        ax.imshow(render_topdown(original), cmap=cmap, vmin=0, vmax=255,
-                  interpolation="nearest")
-        ax.set_title("Original", fontsize=9, fontweight="bold")
-        ax.set_ylabel(f"Sample {s+1}\n(top)", fontsize=8)
-        ax.set_xticks([]); ax.set_yticks([])
-
-        ax = fig.add_subplot(inner[1, 0])
-        ax.imshow(render_side(original).T, cmap=cmap, vmin=0, vmax=255,
-                  interpolation="nearest", origin="lower")
-        ax.set_ylabel("(side)", fontsize=8)
-        ax.set_xticks([]); ax.set_yticks([])
-
-        # each mask ratio
-        for j, ratio in enumerate(mask_ratios):
-            mask = create_mask(voxel, mask_ratio=ratio)
-            masked = voxel.clone()
-            masked[mask] = model.mask_token_id
-
-            # reconstruct
-            x = model.block_embedding(masked)
-            x = x.permute(0, 4, 1, 2, 3).contiguous()
-            e1 = model.enc1(x)
-            e2 = model.enc2(model.pool1(e1))
-            bn = model.bottleneck(model.pool2(e2))
-            d2 = model.up2(bn)
-            d2 = model.dec2(torch.cat([d2, e2], dim=1))
-            d1 = model.up1(d2)
-            d1 = model.dec1(torch.cat([d1, e1], dim=1))
-            logits = model.pred_head(d1)
-            recon = logits.argmax(dim=1)[0].cpu().numpy()
-
-            # blend: show reconstruction everywhere, but highlight errors
-            display = recon.copy()
-
-            # top-down
-            ax = fig.add_subplot(inner[0, j + 1])
-            ax.imshow(render_topdown(display), cmap=cmap, vmin=0, vmax=255,
-                      interpolation="nearest")
-            # compute accuracy for this sample
-            m = mask[0].cpu().numpy()
-            acc = (recon[m] == original[m]).mean() if m.sum() > 0 else 1.0
-            ax.set_title(f"Mask {ratio:.0%}\nacc={acc:.1%}", fontsize=8)
-            ax.set_xticks([]); ax.set_yticks([])
-
-            # side view
-            ax = fig.add_subplot(inner[1, j + 1])
-            ax.imshow(render_side(display).T, cmap=cmap, vmin=0, vmax=255,
-                      interpolation="nearest", origin="lower")
-            ax.set_xticks([]); ax.set_yticks([])
-
-    fig.suptitle("MVM Reconstruction at Various Mask Ratios",
-                 fontsize=16, fontweight="bold", y=0.98)
-    plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
-    print(f"Saved to {save_path}")
-    plt.close()
+    m = mask[0].cpu().numpy()
+    acc = (recon[m] == voxel[0].cpu().numpy()[m]).mean() if m.sum() > 0 else 1.0
+    return recon, acc
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/pretrained_voxel.pt")
-    parser.add_argument("--output", type=str, default="mvm_reconstruction.png")
-    parser.add_argument("--samples", type=int, default=3)
+    parser.add_argument("--output", type=str, default="mvm_reconstruction_3d.png")
+    parser.add_argument("--sample-idx", type=int, default=None,
+                        help="Specific sample index, or auto-picks a dense one")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -149,23 +105,24 @@ def main():
     block_mapping = build_block_mapping(
         df["voxel_data"], max_types=cfg["data"]["max_block_types"]
     )
-
-    # use test split samples
-    n = len(df)
-    test_df = df.iloc[int(n * 0.9):]
-
+    test_df = df.iloc[int(len(df) * 0.9):]
     dataset = VoxelOnlyDataset(test_df, block_mapping)
-    # pick samples with decent non-air content
-    samples = []
-    for i in range(len(dataset)):
-        v = dataset[i]
-        density = (v != 0).float().mean().item()
-        if density > 0.02:
-            samples.append(v)
-        if len(samples) >= args.samples:
-            break
 
-    voxels = torch.stack(samples)
+    # pick a sample with good density
+    if args.sample_idx is not None:
+        sample = dataset[args.sample_idx]
+    else:
+        best_idx, best_density = 0, 0
+        for i in range(min(200, len(dataset))):
+            v = dataset[i]
+            d = (v != 0).float().mean().item()
+            if d > best_density:
+                best_density = d
+                best_idx = i
+        sample = dataset[best_idx]
+        print(f"Auto-picked sample {best_idx} (density={best_density:.1%})")
+
+    original = sample.numpy()
 
     # load model
     model_cfg = cfg["model"]
@@ -176,14 +133,35 @@ def main():
         dropout=0.0,
         mask_ratio=0.2,
     ).to(device)
-
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
+    model.eval()
     print(f"Loaded checkpoint (epoch {ckpt['epoch']})")
 
-    cmap = make_block_colormap(256)
-    visualize_reconstruction(model, voxels, device, args.output, cmap,
-                              n_samples=args.samples)
+    palette = make_block_palette(256)
+    mask_ratios = [0.2, 0.5, 0.7, 0.9]
+
+    # layout: 1 row, original + n reconstructions
+    n_cols = 1 + len(mask_ratios)
+    fig = plt.figure(figsize=(5 * n_cols, 5.5), facecolor="white")
+
+    # original
+    ax = fig.add_subplot(1, n_cols, 1, projection="3d")
+    render_voxel_3d(ax, original, palette, title="Original")
+
+    # reconstructions at each ratio
+    for j, ratio in enumerate(mask_ratios):
+        recon, acc = reconstruct(model, sample, ratio, device)
+        ax = fig.add_subplot(1, n_cols, j + 2, projection="3d")
+        render_voxel_3d(ax, recon, palette,
+                        title=f"Mask {ratio:.0%}  (acc={acc:.1%})")
+
+    fig.suptitle("Masked Voxel Modeling — Reconstruction Quality",
+                 fontsize=16, fontweight="bold", y=0.98)
+    plt.tight_layout(pad=1)
+    plt.savefig(args.output, dpi=200, bbox_inches="tight", facecolor="white")
+    print(f"Saved to {args.output}")
+    plt.close()
 
 
 if __name__ == "__main__":
