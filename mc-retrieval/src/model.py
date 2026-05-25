@@ -26,6 +26,7 @@ class VoxelEncoder(nn.Module):
         block_embed_dim: int = 64,
         channels: list[int] = [128, 256, 512],
         embed_dim: int = 256,
+        dropout: float = 0.3,
     ):
         super().__init__()
 
@@ -38,6 +39,7 @@ class VoxelEncoder(nn.Module):
                 nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1),
                 nn.BatchNorm3d(out_ch),
                 nn.GELU(),
+                nn.Dropout3d(dropout),
                 nn.MaxPool3d(2),
             ])
             in_ch = out_ch
@@ -47,11 +49,15 @@ class VoxelEncoder(nn.Module):
             nn.Conv3d(in_ch, channels[-1], kernel_size=3, padding=1),
             nn.BatchNorm3d(channels[-1]),
             nn.GELU(),
+            nn.Dropout3d(dropout),
             nn.AdaptiveAvgPool3d(1),
         ])
 
         self.conv_stack = nn.Sequential(*layers)
-        self.project = nn.Linear(channels[-1], embed_dim)
+        self.project = nn.Sequential(
+            nn.Linear(channels[-1], embed_dim),
+            nn.Dropout(dropout),
+        )
 
     def forward(self, voxels: torch.LongTensor) -> torch.Tensor:
         """
@@ -81,6 +87,7 @@ class TextEncoder(nn.Module):
         text_hidden_dim: int = 384,
         embed_dim: int = 256,
         freeze: bool = True,
+        dropout: float = 0.3,
     ):
         super().__init__()
 
@@ -92,6 +99,7 @@ class TextEncoder(nn.Module):
         self.project = nn.Sequential(
             nn.Linear(text_hidden_dim, embed_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(embed_dim, embed_dim),
         )
 
@@ -130,18 +138,21 @@ class DualEncoder(nn.Module):
     def __init__(self, cfg: dict, num_block_types: int):
         super().__init__()
         model_cfg = cfg["model"]
+        dropout = model_cfg.get("dropout", 0.3)
 
         self.voxel_encoder = VoxelEncoder(
             num_block_types=num_block_types,
             block_embed_dim=model_cfg["block_embed_dim"],
             channels=model_cfg["voxel_channels"],
             embed_dim=model_cfg["embed_dim"],
+            dropout=dropout,
         )
         self.text_encoder = TextEncoder(
             model_name=model_cfg["text_model"],
             text_hidden_dim=model_cfg["text_hidden_dim"],
             embed_dim=model_cfg["embed_dim"],
             freeze=model_cfg["freeze_text_encoder"],
+            dropout=dropout,
         )
 
     def encode_voxel(self, voxels: torch.LongTensor) -> torch.Tensor:
