@@ -15,6 +15,52 @@ from evaluate import compute_retrieval_metrics, compute_category_metrics
 from utils import load_config, set_seed, get_device, load_checkpoint
 
 
+def _self_retrieval_metrics(embs, categories, ks):
+    """Compute retrieval metrics for same-modality retrieval (excludes self-match)."""
+    sim = embs @ embs.T
+    # mask out diagonal so items can't retrieve themselves
+    sim.fill_diagonal_(-float('inf'))
+    N = sim.shape[0]
+
+    ranks = []
+    for i in range(N):
+        scores = sim[i]
+        # ground truth is still index i, but it's masked out
+        # so we measure: among non-self items, how does the most similar
+        # item rank? For same-modality there's no single "correct" answer,
+        # so we use category-level metrics only for instance-level
+        rank = (scores > scores[i]).sum().item() + 1  # will be N since diag=-inf
+        ranks.append(rank)
+    ranks = np.array(ranks)
+
+    # instance metrics don't make sense for same-modality (no GT pair)
+    # but we report them as N/A placeholder
+    instance = {}
+    for k in ks:
+        instance[f"recall@{k}"] = float('nan')
+    instance["mrr"] = float('nan')
+    instance["median_rank"] = float('nan')
+    instance["mean_rank"] = float('nan')
+
+    # category metrics: does the top-k contain same-category items?
+    sorted_indices = torch.argsort(sim, dim=1, descending=True).numpy()
+    q_cats = np.array(categories)
+
+    category = {}
+    for k in ks:
+        precisions = []
+        hit_rates = []
+        for i in range(N):
+            top_k_idx = sorted_indices[i, :k]
+            n_relevant = (q_cats[top_k_idx] == q_cats[i]).sum()
+            precisions.append(n_relevant / k)
+            hit_rates.append(1.0 if n_relevant > 0 else 0.0)
+        category[f"cat_precision@{k}"] = float(np.mean(precisions))
+        category[f"cat_hit_rate@{k}"] = float(np.mean(hit_rates))
+
+    return instance, category
+
+
 def random_baseline(n: int, ks: list[int]) -> dict:
     """Analytical random retrieval baseline."""
     metrics = {}
@@ -49,12 +95,10 @@ def text_only_baseline(test_loader, device, ks: list[int]):
                                  show_progress_bar=False)
         text_embs = torch.nn.functional.normalize(text_embs, dim=-1).cpu()
 
-    # text→text similarity as proxy for text→voxel retrieval
-    # (retrieving the voxel paired with the most similar text)
-    instance = compute_retrieval_metrics(text_embs, text_embs, ks=ks)
-    category = compute_category_metrics(text_embs, text_embs,
-                                        all_categories, all_categories, ks=ks)
-    return instance, category
+    # text→text similarity (excluding self-match)
+    return _self_retrieval_metrics(text_embs, all_categories, ks)
+
+
 
 
 def bm25_baseline(test_loader, ks: list[int]):
@@ -65,41 +109,29 @@ def bm25_baseline(test_loader, ks: list[int]):
         all_texts.extend(texts)
         all_categories.extend(categories)
 
-    # TF-IDF as BM25 approximation
     vectorizer = TfidfVectorizer(
         max_features=10000,
-        sublinear_tf=True,      # log(1 + tf), closer to BM25 behavior
+        sublinear_tf=True,
         stop_words="english",
     )
     tfidf = vectorizer.fit_transform(all_texts)
 
-    # cosine similarity via normalized dot product
     from sklearn.preprocessing import normalize
     tfidf_norm = normalize(tfidf, norm="l2")
-    sim_matrix = (tfidf_norm @ tfidf_norm.T).toarray()
+    sim = torch.from_numpy((tfidf_norm @ tfidf_norm.T).toarray()).float()
+    sim.fill_diagonal_(-float('inf'))  # exclude self-match
 
-    # convert to torch for our metrics functions
-    sim_tensor = torch.from_numpy(sim_matrix).float()
     N = len(all_texts)
+    sorted_indices = torch.argsort(sim, dim=1, descending=True).numpy()
+    q_cats = np.array(all_categories)
 
-    # compute ranks from similarity matrix
-    ranks = []
-    for i in range(N):
-        scores = sim_tensor[i]
-        rank = (scores > scores[i]).sum().item() + 1
-        ranks.append(rank)
-    ranks = np.array(ranks)
-
+    # instance-level: N/A for same-modality
     instance = {}
     for k in ks:
-        instance[f"recall@{k}"] = float((ranks <= k).mean())
-    instance["mrr"] = float((1.0 / ranks).mean())
-    instance["median_rank"] = float(np.median(ranks))
-    instance["mean_rank"] = float(np.mean(ranks))
-
-    # category metrics using similarity matrix
-    sorted_indices = torch.argsort(sim_tensor, dim=1, descending=True).numpy()
-    q_cats = np.array(all_categories)
+        instance[f"recall@{k}"] = float('nan')
+    instance["mrr"] = float('nan')
+    instance["median_rank"] = float('nan')
+    instance["mean_rank"] = float('nan')
 
     category = {}
     for k in ks:
@@ -131,10 +163,7 @@ def voxel_only_baseline(test_loader, model, device, ks: list[int]):
 
     voxel_embs = torch.cat(voxel_embs, dim=0)
 
-    instance = compute_retrieval_metrics(voxel_embs, voxel_embs, ks=ks)
-    category = compute_category_metrics(voxel_embs, voxel_embs,
-                                        all_categories, all_categories, ks=ks)
-    return instance, category
+    return _self_retrieval_metrics(voxel_embs, all_categories, ks)
 
 
 def run_baselines(cfg: dict, checkpoint_path: str = None):
