@@ -44,7 +44,7 @@ def vol_to_facecolors(vol, palette):
     return rgba
 
 
-def render_voxel(ax, vol, palette, title="", elev=25, azim=225):
+def render_voxel(ax, vol, palette, title="", elev=30, azim=135):
     """Render voxel grid on a 3D axis. Only renders non-air blocks."""
     filled = vol != 0
     if not filled.any():
@@ -96,8 +96,12 @@ def get_masked_and_recon(model, voxel, mask_ratio, device):
     logits = model.pred_head(d1)
     recon = logits.argmax(dim=1)[0].cpu().numpy()
 
+    # reconstruction: keep original at non-masked, model prediction at masked
+    recon_display = original.copy()
+    recon_display[m] = recon[m]  # only replace masked positions
+
     acc = (recon[m] == original[m]).mean() if m.sum() > 0 else 1.0
-    return masked_display, recon, acc
+    return masked_display, recon_display, acc
 
 
 def main():
