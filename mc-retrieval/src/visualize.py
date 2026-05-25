@@ -4,7 +4,6 @@ import argparse
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 import umap
 from tqdm import tqdm
@@ -14,63 +13,57 @@ from model import DualEncoder
 from utils import load_config, set_seed, get_device, load_checkpoint
 
 
+# register a nicer font if available
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Inter", "Helvetica", "Arial", "DejaVu Sans"],
+    "font.size": 11,
+    "axes.titlesize": 15,
+    "axes.titleweight": "bold",
+})
+
+
 @torch.no_grad()
 def extract_embeddings(model, loader, device):
-    """Extract text and voxel embeddings + categories from a data loader."""
     model.eval()
     text_embs, voxel_embs, categories = [], [], []
-
     for texts, voxels, cats in tqdm(loader, desc="Extracting embeddings", leave=False):
         voxels = voxels.to(device)
         t_emb, v_emb = model(texts, voxels)
         text_embs.append(t_emb.cpu())
         voxel_embs.append(v_emb.cpu())
         categories.extend(cats)
-
     return (torch.cat(text_embs, 0).numpy(),
             torch.cat(voxel_embs, 0).numpy(),
             np.array(categories))
 
 
 def plot_embedding_space(text_embs, voxel_embs, categories, save_path="embedding_space.png"):
-    """Create UMAP visualization of the shared embedding space."""
-    # combine all embeddings for joint UMAP
     all_embs = np.concatenate([text_embs, voxel_embs], axis=0)
     N = len(text_embs)
-    modalities = np.array(["text"] * N + ["voxel"] * N)
-    all_cats = np.concatenate([categories, categories])
 
-    # UMAP projection
     print("Running UMAP...")
-    reducer = umap.UMAP(
-        n_neighbors=30,
-        min_dist=0.3,
-        metric="cosine",
-        random_state=42,
-    )
+    reducer = umap.UMAP(n_neighbors=30, min_dist=0.3, metric="cosine", random_state=42)
     coords = reducer.fit_transform(all_embs)
+    text_coords = coords[:N]
+    voxel_coords = coords[N:]
 
-    # pick top categories by frequency for clean visualization
+    # top categories
     unique_cats, counts = np.unique(categories, return_counts=True)
-    top_k = 8
+    top_k = 7
     top_cats = unique_cats[np.argsort(-counts)][:top_k]
 
-    # color palette
-    cmap = plt.cm.get_cmap("tab10", top_k + 1)
-    cat_colors = {cat: cmap(i) for i, cat in enumerate(top_cats)}
-    cat_colors["Other"] = (0.7, 0.7, 0.7, 0.4)
+    palette = [
+        "#4e79a7", "#f28e2b", "#59a14f", "#e15759",
+        "#76b7b2", "#edc948", "#b07aa1", "#9c755f",
+    ]
+    cat_colors = {cat: palette[i] for i, cat in enumerate(top_cats)}
 
-    # assign colors
-    colors = []
-    for cat in all_cats:
-        colors.append(cat_colors.get(cat, cat_colors["Other"]))
-
-    # shorten category names for legend
     short_names = {
         "Land Structure Map": "Land Structure",
         "3D Art Map": "3D Art",
-        "Redstone Device Map": "Redstone Device",
-        "Other Map": "Other Map",
+        "Redstone Device Map": "Redstone",
+        "Other Map": "Other",
         "Air Structure Map": "Air Structure",
         "Complex Map": "Complex",
         "Pixel Art Map": "Pixel Art",
@@ -79,77 +72,72 @@ def plot_embedding_space(text_embs, voxel_embs, categories, save_path="embedding
         "Piston Map": "Piston",
     }
 
-    # --- plot ---
-    fig, axes = plt.subplots(1, 3, figsize=(24, 7))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8), facecolor="#fafafa")
+    for ax in axes:
+        ax.set_facecolor("#fafafa")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
-    # Plot 1: all points, colored by category
+    # --- Panel 1: by category ---
     ax = axes[0]
-    ax.set_title("Embedding Space — by Category", fontsize=14, fontweight="bold")
-    for i, cat in enumerate(top_cats):
-        mask = all_cats == cat
-        ax.scatter(coords[mask, 0], coords[mask, 1],
-                   c=[cat_colors[cat]], s=8, alpha=0.5,
-                   label=short_names.get(cat, cat))
-    # plot "other" categories
-    other_mask = ~np.isin(all_cats, top_cats)
+    ax.set_title("Shared Embedding Space — by Category")
+
+    # plot "other" first (background)
+    other_mask = ~np.isin(categories, top_cats)
     if other_mask.any():
-        ax.scatter(coords[other_mask, 0], coords[other_mask, 1],
-                   c=[(0.7, 0.7, 0.7, 0.3)], s=4, alpha=0.2, label="Other")
-    ax.legend(fontsize=8, markerscale=3, loc="best")
-    ax.set_xticks([])
-    ax.set_yticks([])
+        other_all = np.concatenate([other_mask, other_mask])
+        ax.scatter(coords[other_all, 0], coords[other_all, 1],
+                   c="#d0d0d0", s=6, alpha=0.2, zorder=1)
 
-    # Plot 2: colored by modality (text vs voxel)
+    # plot each category (text + voxel together)
+    for cat in top_cats:
+        cat_mask = categories == cat
+        cat_all = np.concatenate([cat_mask, cat_mask])
+        ax.scatter(coords[cat_all, 0], coords[cat_all, 1],
+                   c=cat_colors[cat], s=14, alpha=0.55, zorder=2,
+                   label=short_names.get(cat, cat), edgecolors="white",
+                   linewidths=0.2)
+
+    ax.legend(fontsize=9, markerscale=2.5, loc="lower left",
+              framealpha=0.9, edgecolor="#ccc", fancybox=True)
+
+    # --- Panel 2: by modality with paired lines ---
     ax = axes[1]
-    ax.set_title("Embedding Space — by Modality", fontsize=14, fontweight="bold")
-    text_mask = modalities == "text"
-    voxel_mask = modalities == "voxel"
-    ax.scatter(coords[voxel_mask, 0], coords[voxel_mask, 1],
-               c="#2196F3", s=8, alpha=0.4, label="Voxel")
-    ax.scatter(coords[text_mask, 0], coords[text_mask, 1],
-               c="#FF5722", s=8, alpha=0.4, marker="x", label="Text")
-    ax.legend(fontsize=10, markerscale=3)
-    ax.set_xticks([])
-    ax.set_yticks([])
+    ax.set_title("Cross-Modal Alignment — Text vs Voxel")
 
-    # Plot 3: paired connections for a subset
-    ax = axes[2]
-    ax.set_title("Text-Voxel Pairs (subset)", fontsize=14, fontweight="bold")
-    # show 80 random pairs with lines connecting them
+    # all voxels
+    ax.scatter(voxel_coords[:, 0], voxel_coords[:, 1],
+               c="#4e79a7", s=12, alpha=0.35, zorder=2, label="Voxel")
+    # all text
+    ax.scatter(text_coords[:, 0], text_coords[:, 1],
+               c="#e15759", s=12, alpha=0.35, marker="x",
+               linewidths=0.8, zorder=2, label="Text")
+
+    # draw paired lines for a subset
     np.random.seed(42)
-    sample_idx = np.random.choice(N, min(80, N), replace=False)
-
-    # plot all points faded
-    ax.scatter(coords[:N, 0], coords[:N, 1],
-               c="#FF5722", s=6, alpha=0.1, marker="x")
-    ax.scatter(coords[N:, 0], coords[N:, 1],
-               c="#2196F3", s=6, alpha=0.1)
-
-    # draw lines and highlight sampled pairs
+    sample_idx = np.random.choice(N, min(60, N), replace=False)
     for idx in sample_idx:
         cat = categories[idx]
-        color = cat_colors.get(cat, (0.5, 0.5, 0.5, 0.5))
-        # text point
-        tx, ty = coords[idx, 0], coords[idx, 1]
-        # voxel point
-        vx, vy = coords[N + idx, 0], coords[N + idx, 1]
-        ax.plot([tx, vx], [ty, vy], c=color, alpha=0.3, linewidth=0.5)
-        ax.scatter(tx, ty, c=[color], s=20, marker="x", zorder=5)
-        ax.scatter(vx, vy, c=[color], s=20, marker="o", zorder=5)
+        color = cat_colors.get(cat, "#999999")
+        tx, ty = text_coords[idx]
+        vx, vy = voxel_coords[idx]
+        ax.plot([tx, vx], [ty, vy], c=color, alpha=0.25, linewidth=0.6, zorder=1)
 
     legend_elements = [
-        Line2D([0], [0], marker="x", color="w", markeredgecolor="#FF5722",
-               markersize=8, label="Text"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#2196F3",
-               markersize=8, label="Voxel"),
-        Line2D([0], [0], color="gray", alpha=0.5, label="Paired"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="#4e79a7",
+               markersize=9, label="Voxel embedding"),
+        Line2D([0], [0], marker="x", color="w", markeredgecolor="#e15759",
+               markersize=9, markeredgewidth=2, label="Text embedding"),
+        Line2D([0], [0], color="#999", alpha=0.5, linewidth=1.5,
+               label="Paired (same item)"),
     ]
-    ax.legend(handles=legend_elements, fontsize=10)
-    ax.set_xticks([])
-    ax.set_yticks([])
+    ax.legend(handles=legend_elements, fontsize=9, loc="lower left",
+              framealpha=0.9, edgecolor="#ccc", fancybox=True)
 
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.tight_layout(pad=2)
+    plt.savefig(save_path, dpi=250, bbox_inches="tight", facecolor="#fafafa")
     print(f"Saved to {save_path}")
     plt.close()
 
@@ -166,14 +154,12 @@ def main():
     device = get_device()
 
     _, _, test_loader, block_mapping, num_blocks = create_dataloaders(cfg)
-
     ckpt = load_checkpoint(args.checkpoint, device)
     model = DualEncoder(cfg, num_block_types=num_blocks).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     text_embs, voxel_embs, categories = extract_embeddings(model, test_loader, device)
     print(f"Extracted {len(text_embs)} embeddings (dim={text_embs.shape[1]})")
-
     plot_embedding_space(text_embs, voxel_embs, categories, args.output)
 
 
