@@ -108,18 +108,19 @@ def remap_voxel(voxel_flat, mapping: dict, crop_bbox: bool = True,
 class SchematicDataset(Dataset):
     """Dataset of (text, voxel, category) tuples for contrastive learning."""
 
-    def __init__(self, df: pd.DataFrame, block_mapping: dict):
+    def __init__(self, df: pd.DataFrame, block_mapping: dict, crop_bbox: bool = True):
         self.texts = [build_text(row) for _, row in df.iterrows()]
         self.voxels = df["voxel_data"].tolist()
         self.categories = df["subtitle"].fillna("Unknown").tolist()
         self.block_mapping = block_mapping
+        self.crop_bbox = crop_bbox
 
     def __len__(self):
         return len(self.texts)
 
     def __getitem__(self, idx):
         text = self.texts[idx]
-        voxel = remap_voxel(self.voxels[idx], self.block_mapping)
+        voxel = remap_voxel(self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox)
         category = self.categories[idx]
         return text, voxel, category
 
@@ -167,10 +168,12 @@ def create_dataloaders(
     )
 
     print(f"Splits — train: {len(idx_train)}, val: {len(idx_val)}, test: {len(idx_test)}")
+    
+    crop_bbox = data_cfg.get("crop_bbox", True)
 
-    ds_train = SchematicDataset(df.iloc[idx_train].reset_index(drop=True), block_mapping)
-    ds_val   = SchematicDataset(df.iloc[idx_val].reset_index(drop=True), block_mapping)
-    ds_test  = SchematicDataset(df.iloc[idx_test].reset_index(drop=True), block_mapping)
+    ds_train = SchematicDataset(df.iloc[idx_train].reset_index(drop=True), block_mapping, crop_bbox=crop_bbox)
+    ds_val   = SchematicDataset(df.iloc[idx_val].reset_index(drop=True), block_mapping, crop_bbox=crop_bbox)
+    ds_test  = SchematicDataset(df.iloc[idx_test].reset_index(drop=True), block_mapping, crop_bbox=crop_bbox)
 
     # --- loaders -------------------------------------------------------
     train_cfg = cfg["training"]

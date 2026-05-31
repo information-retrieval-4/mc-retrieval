@@ -30,15 +30,16 @@ from utils import load_config, set_seed, get_device, save_checkpoint
 class VoxelOnlyDataset(Dataset):
     """Dataset that returns only voxel grids for self-supervised pretraining."""
 
-    def __init__(self, df: pd.DataFrame, block_mapping: dict):
+    def __init__(self, df: pd.DataFrame, block_mapping: dict, crop_bbox: bool = True):
         self.voxels = df["voxel_data"].tolist()
         self.block_mapping = block_mapping
+        self.crop_bbox = crop_bbox
 
     def __len__(self):
         return len(self.voxels)
 
     def __getitem__(self, idx):
-        return remap_voxel(self.voxels[idx], self.block_mapping)
+        return remap_voxel(self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ def pretrain(cfg: dict):
     )
     num_blocks = cfg["data"]["max_block_types"]
 
-    dataset = VoxelOnlyDataset(df, block_mapping)
+    dataset = VoxelOnlyDataset(df, block_mapping, crop_bbox=cfg["data"].get("crop_bbox", True))
     loader = DataLoader(
         dataset,
         batch_size=batch_size,

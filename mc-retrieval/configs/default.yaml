@@ -4,6 +4,7 @@ data:
   parquet_path: "data/data.parquet"
   max_block_types: 256        # keep top-N most frequent block IDs, rest → <rare>
   text_max_length: 256        # max tokens for text encoder
+  crop_bbox: true             # crop to bounding box before resizing
   val_split: 0.1
   test_split: 0.1
   seed: 42
