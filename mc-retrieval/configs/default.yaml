@@ -12,6 +12,8 @@ data:
 model:
   embed_dim: 256              # shared embedding space dimensionality
   # voxel encoder
+  use_learned_stem: true
+  use_depthwise_separable: true
   block_embed_dim: 32          # per-block embedding dimension
   voxel_channels: [64, 128, 256]   # conv3d channel progression 
   dropout: 0.3

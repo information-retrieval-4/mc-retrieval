@@ -6,6 +6,24 @@ from sentence_transformers import SentenceTransformer
 
 
 # ---------------------------------------------------------------------------
+# Depthwise Separable 3D Convolution
+# ---------------------------------------------------------------------------
+
+class DepthwiseSeparableConv3d(nn.Module):
+    """Depthwise separable 3D convolution."""
+    def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1):
+        super().__init__()
+        self.depthwise = nn.Conv3d(
+            in_channels, in_channels, kernel_size=kernel_size, 
+            padding=padding, stride=stride, groups=in_channels
+        )
+        self.pointwise = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.pointwise(self.depthwise(x))
+
+
+# ---------------------------------------------------------------------------
 # Voxel Encoder — Block Embedding + 3D CNN
 # ---------------------------------------------------------------------------
 
@@ -27,6 +45,8 @@ class VoxelEncoder(nn.Module):
         channels: list[int] = [128, 256, 512],
         embed_dim: int = 256,
         dropout: float = 0.3,
+        use_learned_stem: bool = False,
+        use_depthwise_separable: bool = False,
     ):
         super().__init__()
 
@@ -34,9 +54,22 @@ class VoxelEncoder(nn.Module):
 
         layers = []
         in_ch = block_embed_dim
-        for out_ch in channels[:-1]:
+
+        if use_learned_stem:
             layers.extend([
-                nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1),
+                nn.Conv3d(in_ch, in_ch, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm3d(in_ch),
+                nn.GELU(),
+            ])
+
+        for out_ch in channels[:-1]:
+            conv_layer = (
+                DepthwiseSeparableConv3d(in_ch, out_ch, kernel_size=3, padding=1)
+                if use_depthwise_separable
+                else nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1)
+            )
+            layers.extend([
+                conv_layer,
                 nn.BatchNorm3d(out_ch),
                 nn.GELU(),
                 nn.Dropout3d(dropout),
@@ -45,8 +78,13 @@ class VoxelEncoder(nn.Module):
             in_ch = out_ch
 
         # last conv block uses adaptive pooling instead of maxpool
+        last_conv_layer = (
+            DepthwiseSeparableConv3d(in_ch, channels[-1], kernel_size=3, padding=1)
+            if use_depthwise_separable
+            else nn.Conv3d(in_ch, channels[-1], kernel_size=3, padding=1)
+        )
         layers.extend([
-            nn.Conv3d(in_ch, channels[-1], kernel_size=3, padding=1),
+            last_conv_layer,
             nn.BatchNorm3d(channels[-1]),
             nn.GELU(),
             nn.Dropout3d(dropout),
@@ -146,6 +184,8 @@ class DualEncoder(nn.Module):
             channels=model_cfg["voxel_channels"],
             embed_dim=model_cfg["embed_dim"],
             dropout=dropout,
+            use_learned_stem=model_cfg.get("use_learned_stem", False),
+            use_depthwise_separable=model_cfg.get("use_depthwise_separable", False),
         )
         self.text_encoder = TextEncoder(
             model_name=model_cfg["text_model"],
