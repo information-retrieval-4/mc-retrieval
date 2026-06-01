@@ -44,6 +44,7 @@ eval:
 
 pretraining:
   mask_ratio: 0.2 # fraction of non-air blocks to mask
+  augment: true # whether to apply training augmentations during pretraining
   epochs: 200
   batch_size: 256
   lr: 1.0e-3

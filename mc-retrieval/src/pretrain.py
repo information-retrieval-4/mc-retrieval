@@ -31,16 +31,33 @@ from model import DepthwiseSeparableConv3d
 class VoxelOnlyDataset(Dataset):
     """Dataset that returns only voxel grids for self-supervised pretraining."""
 
-    def __init__(self, df: pd.DataFrame, block_mapping: dict, crop_bbox: bool = True):
+    def __init__(self, df: pd.DataFrame, block_mapping: dict, crop_bbox: bool = True,
+                 augment: bool = False, aug_apply_prob: float = 0.5, aug_dropout_prob: float = 0.05):
         self.voxels = df["voxel_data"].tolist()
         self.block_mapping = block_mapping
         self.crop_bbox = crop_bbox
+        self.augment = augment
+        self.aug_apply_prob = aug_apply_prob
+        self.aug_dropout_prob = aug_dropout_prob
 
     def __len__(self):
         return len(self.voxels)
 
     def __getitem__(self, idx):
-        return remap_voxel(self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox)
+        voxel = remap_voxel(self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox)
+        if self.augment:
+            import random
+            # 1. Random 90-degree rotations in the horizontal plane (assuming axes 0 and 2 are X and Z)
+            k = random.randint(0, 3)
+            if k > 0:
+                voxel = torch.rot90(voxel, k, [0, 2])
+                
+            # 2. Block dropout
+            if random.random() < self.aug_apply_prob:
+                non_air_mask = voxel != 0
+                drop_mask = torch.rand_like(voxel, dtype=torch.float) < self.aug_dropout_prob
+                voxel[non_air_mask & drop_mask] = 0
+        return voxel
 
 
 # ---------------------------------------------------------------------------
@@ -64,21 +81,7 @@ def create_mask(voxels: torch.LongTensor, mask_ratio: float = 0.2):
     return mask
 
 
-# ---------------------------------------------------------------------------
-# Augmentation (same as training)
-# ---------------------------------------------------------------------------
-
-def augment_voxels(voxels: torch.LongTensor) -> torch.LongTensor:
-    """Random 90° Y-rotation + horizontal flips."""
-    k = torch.randint(0, 4, (1,)).item()
-    if k > 0:
-        voxels = torch.rot90(voxels, k, dims=(1, 3))
-    if torch.rand(1).item() > 0.5:
-        voxels = voxels.flip(dims=(1,))
-    if torch.rand(1).item() > 0.5:
-        voxels = voxels.flip(dims=(3,))
-    return voxels
-
+# (Old batch-level augment_voxels removed in favor of dataset-level augmentations)
 
 # ---------------------------------------------------------------------------
 # Model: U-Net style encoder-decoder
@@ -296,7 +299,13 @@ def pretrain(cfg: dict):
     )
     num_blocks = cfg["data"]["max_block_types"]
 
-    dataset = VoxelOnlyDataset(df, block_mapping, crop_bbox=cfg["data"].get("crop_bbox", True))
+    crop_bbox = cfg["data"].get("crop_bbox", True)
+    augment = pt_cfg.get("augment", cfg["data"].get("augment", True))
+    aug_apply_prob = cfg["data"].get("aug_apply_prob", 0.5)
+    aug_dropout_prob = cfg["data"].get("aug_dropout_prob", 0.05)
+
+    dataset = VoxelOnlyDataset(df, block_mapping, crop_bbox=crop_bbox, 
+                               augment=augment, aug_apply_prob=aug_apply_prob, aug_dropout_prob=aug_dropout_prob)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -344,7 +353,6 @@ def pretrain(cfg: dict):
         pbar = tqdm(loader, desc=f"  epoch {epoch:3d}", leave=False)
         for voxels in pbar:
             voxels = voxels.to(device)
-            voxels = augment_voxels(voxels)
 
             logits, mask = model(voxels)
 
