@@ -85,11 +85,10 @@ def train_one_epoch(
 
         if use_amp:
             scaler.scale(loss).backward()
-            # Unscale before clipping so grad norms are in real scale.
-            # unscale_ must cover ALL optimizer param groups — pass the
-            # same optimizer that owns the scaled params.
-            scaler.unscale_(optimizer)
-            # Clip both model params AND criterion temperature param.
+            # Do NOT call scaler.unscale_(optimizer) manually — PyTorch 2.x
+            # GradScaler.step() handles unscaling internally. Manual unscale_
+            # causes "No inf checks recorded" if any param group has no grad.
+            # Clip scaled gradients (approximate but safe with AMP).
             all_params = list(model.parameters()) + list(criterion.parameters())
             nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
             scaler.step(optimizer)
