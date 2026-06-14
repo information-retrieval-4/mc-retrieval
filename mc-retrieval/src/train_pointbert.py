@@ -85,10 +85,7 @@ def train_one_epoch(
 
         if use_amp:
             scaler.scale(loss).backward()
-            # Do NOT call scaler.unscale_(optimizer) manually — PyTorch 2.x
-            # GradScaler.step() handles unscaling internally. Manual unscale_
-            # causes "No inf checks recorded" if any param group has no grad.
-            # Clip scaled gradients (approximate but safe with AMP).
+            scaler.unscale_(optimizer)
             all_params = list(model.parameters()) + list(criterion.parameters())
             nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
             scaler.step(optimizer)
