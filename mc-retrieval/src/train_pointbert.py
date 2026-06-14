@@ -172,11 +172,27 @@ def train(cfg: dict, warmstart_path: str = None):
     train_loader, val_loader, test_loader, block_mapping, num_blocks = \
         create_dataloaders(cfg)
 
-    # ── Model ──────────────────────────────────────────────────────────────
+    # ── Model ──────────────────────────────────────────────────────
     model     = DualEncoderPointBERT(cfg, num_block_types=num_blocks).to(device)
     criterion = CLIPLoss(
         temperature_init=cfg["training"]["temperature_init"]
     ).to(device)
+
+    # ── Strategy 2: Semantic Embedding Init ────────────────────────────────
+    model_cfg = cfg.get("model", {})
+    if model_cfg.get("use_semantic_init", False):
+        # Requires Strategy 1 (use_name_vocab=True) so index_to_name is available
+        if "__index_to_name__" in block_mapping:
+            print("\n[Strategy 2] Initializing block_embedding with semantic names...")
+            freeze_emb = model_cfg.get("semantic_init_freeze", False)
+            model.voxel_encoder.init_semantic_embeddings(
+                index_to_name  = block_mapping["__index_to_name__"],
+                sentence_model = model.text_encoder.encoder,  # reuse frozen ST
+                freeze         = freeze_emb,
+            )
+        else:
+            print("[Strategy 2] SKIPPED: '__index_to_name__' not in block_mapping. "
+                  "Enable use_name_vocab=true in data config to use Strategy 1+2.")
 
     # ── Optional warm-start from Plan 2 checkpoint ─────────────────────────
     if warmstart_path and os.path.exists(warmstart_path):

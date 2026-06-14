@@ -466,6 +466,9 @@ class MinecraftPointBERTEncoder(nn.Module):
             nn.Linear(trans_dim, embed_dim),
         )
 
+        # Store block_embed_dim for semantic init
+        self.block_embed_dim = block_embed_dim
+
     def _set_backbone_frozen(self, freeze: bool):
         for p in self.backbone.parameters():
             p.requires_grad = not freeze
@@ -476,6 +479,68 @@ class MinecraftPointBERTEncoder(nn.Module):
         """Curriculum: panggil mid-training untuk switch Plan 2 → Plan 1."""
         self._set_backbone_frozen(False)
         self.freeze_backbone = False
+
+    def init_semantic_embeddings(
+        self,
+        index_to_name: list,
+        sentence_model,
+        freeze: bool = False,
+    ):
+        """Strategy 2: Initialize block_embedding weights from block name semantics.
+
+        Instead of random initialization, each block type embedding is set to
+        the projected sentence embedding of its Minecraft name. This means the
+        model starts knowing that 'oak_log' and 'spruce_log' are similar,
+        'ice' and 'snow_block' are related, etc.
+
+        Args:
+            index_to_name : list[str], len=vocab_size — from block_mapping['__index_to_name__']
+                            index_to_name[i] = block name for compact index i
+            sentence_model: SentenceTransformer instance (from TextEncoder.encoder)
+            freeze        : if True, freeze block_embedding after init (no gradient)
+        """
+        vocab_size = self.block_embedding.num_embeddings
+        embed_dim  = self.block_embedding.embedding_dim
+
+        # Pad or truncate name list to vocab size
+        names = list(index_to_name)[:vocab_size]
+        while len(names) < vocab_size:
+            names.append("<pad>")
+
+        print(f"[PointBERT] Strategy 2: computing semantic embeddings "
+              f"for {vocab_size} block names...")
+
+        with torch.no_grad():
+            # Encode all names with SentenceTransformer → (vocab_size, 384)
+            raw_embs = sentence_model.encode(
+                names,
+                convert_to_tensor=True,
+                show_progress_bar=True,
+                batch_size=256,
+            )  # (vocab_size, text_hidden_dim)
+
+            # Project from text_hidden_dim → block_embed_dim via a simple linear
+            text_dim = raw_embs.shape[-1]
+            proj = nn.Linear(text_dim, embed_dim, bias=False)
+            nn.init.xavier_uniform_(proj.weight)
+            proj = proj.to(raw_embs.device)
+
+            projected = proj(raw_embs)  # (vocab_size, block_embed_dim)
+
+            # Normalize so initial scale is comparable to random init
+            projected = F.normalize(projected, dim=-1)
+
+            # Copy into embedding weight
+            self.block_embedding.weight.data.copy_(
+                projected.to(self.block_embedding.weight.device)
+            )
+
+        if freeze:
+            self.block_embedding.weight.requires_grad = False
+            print(f"[PointBERT] Strategy 2: block_embedding FROZEN after semantic init")
+        else:
+            self.block_embedding.weight.requires_grad = True
+            print(f"[PointBERT] Strategy 2: block_embedding TRAINABLE after semantic init")
 
     def forward(self, voxels: torch.LongTensor) -> torch.Tensor:
         B = voxels.shape[0]
