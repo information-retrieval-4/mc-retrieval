@@ -485,6 +485,7 @@ class MinecraftPointBERTEncoder(nn.Module):
         index_to_name: list,
         sentence_model,
         freeze: bool = False,
+        cache_dir: str = "checkpoints/cache"
     ):
         """Strategy 2: Initialize block_embedding weights from block name semantics.
 
@@ -493,12 +494,12 @@ class MinecraftPointBERTEncoder(nn.Module):
         model starts knowing that 'oak_log' and 'spruce_log' are similar,
         'ice' and 'snow_block' are related, etc.
 
-        Args:
-            index_to_name : list[str], len=vocab_size — from block_mapping['__index_to_name__']
-                            index_to_name[i] = block name for compact index i
-            sentence_model: SentenceTransformer instance (from TextEncoder.encoder)
-            freeze        : if True, freeze block_embedding after init (no gradient)
+        Features a local cache system to avoid repeated sentence model inference.
         """
+        import os
+        import hashlib
+        import numpy as np
+
         vocab_size = self.block_embedding.num_embeddings
         embed_dim  = self.block_embedding.embedding_dim
 
@@ -507,23 +508,47 @@ class MinecraftPointBERTEncoder(nn.Module):
         while len(names) < vocab_size:
             names.append("<pad>")
 
-        print(f"[PointBERT] Strategy 2: computing semantic embeddings "
-              f"for {vocab_size} block names...")
+        # Create unique hash for this specific vocabulary list
+        names_str = ",".join(names)
+        vocab_hash = hashlib.md5(names_str.encode("utf-8")).hexdigest()
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"block_emb_{vocab_hash}.npy")
+
+        raw_embs_np = None
+        if os.path.exists(cache_path):
+            print(f"[PointBERT] Strategy 2: Found cached embeddings at {cache_path}. Loading...")
+            try:
+                raw_embs_np = np.load(cache_path)
+                print(f"[PointBERT] Loaded {raw_embs_np.shape} from cache successfully.")
+            except Exception as e:
+                print(f"[PointBERT] Warning: Failed to load cache ({e}). Re-computing...")
+
+        if raw_embs_np is None:
+            print(f"[PointBERT] Strategy 2: computing semantic embeddings for {vocab_size} block names...")
+            with torch.no_grad():
+                # Encode all names with SentenceTransformer → (vocab_size, 384)
+                raw_embs_tensor = sentence_model.encode(
+                    names,
+                    convert_to_tensor=True,
+                    show_progress_bar=True,
+                    batch_size=256,
+                )  # (vocab_size, text_hidden_dim)
+                raw_embs_np = raw_embs_tensor.cpu().numpy()
+                
+                # Save to cache
+                np.save(cache_path, raw_embs_np)
+                print(f"[PointBERT] Saved computed embeddings to cache: {cache_path}")
+
+        # Convert back to tensor on the correct device
+        device = self.block_embedding.weight.device
+        raw_embs = torch.from_numpy(raw_embs_np).to(device)
 
         with torch.no_grad():
-            # Encode all names with SentenceTransformer → (vocab_size, 384)
-            raw_embs = sentence_model.encode(
-                names,
-                convert_to_tensor=True,
-                show_progress_bar=True,
-                batch_size=256,
-            )  # (vocab_size, text_hidden_dim)
-
             # Project from text_hidden_dim → block_embed_dim via a simple linear
             text_dim = raw_embs.shape[-1]
             proj = nn.Linear(text_dim, embed_dim, bias=False)
             nn.init.xavier_uniform_(proj.weight)
-            proj = proj.to(raw_embs.device)
+            proj = proj.to(device)
 
             projected = proj(raw_embs)  # (vocab_size, block_embed_dim)
 
@@ -531,9 +556,7 @@ class MinecraftPointBERTEncoder(nn.Module):
             projected = F.normalize(projected, dim=-1)
 
             # Copy into embedding weight
-            self.block_embedding.weight.data.copy_(
-                projected.to(self.block_embedding.weight.device)
-            )
+            self.block_embedding.weight.data.copy_(projected)
 
         if freeze:
             self.block_embedding.weight.requires_grad = False

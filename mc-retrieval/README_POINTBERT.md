@@ -13,6 +13,7 @@ This section documents the **Point-BERT integration** and the **three semantic e
 ### 2. Strategy 2: Semantic Embedding Initialization (`use_semantic_init: true`)
 * **Core Concept**: Pre-computes block name text embeddings using the same `SentenceTransformer` text model (e.g., `all-MiniLM-L6-v2`) and projects them into the `block_embedding` dimension.
 * **Why it matters**: Voxel features start with close embeddings if their block names are semantically related (e.g., `oak_log` vs. `spruce_log`), allowing the model to quickly leverage language concepts.
+* **Smart Caching**: Uses a local cache system. It hashes the block vocabulary name list (using MD5) and saves/loads the pre-computed embeddings to/from `checkpoints/cache/block_emb_{hash}.npy`. This avoids running text embedding inference repeatedly on subsequent training runs.
 * **Freeze Option**: Control whether the semantic weights are frozen or trainable during training using `semantic_init_freeze: true/false`.
 
 ### 3. Strategy 3: Material Context Text Augmentation (`use_material_context: true`)
