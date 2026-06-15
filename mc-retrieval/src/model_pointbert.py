@@ -582,11 +582,9 @@ class MinecraftPointBERTEncoder(nn.Module):
         tokens        = tokens.view(B, M, -1)                   # (B, M, trans_dim)
 
         # D: Point-BERT Transformer
-        if self.freeze_backbone:
-            with torch.no_grad():
-                global_feat = self.backbone(tokens, xyz)   # (B, trans_dim)
-        else:
-            global_feat = self.backbone(tokens, xyz)
+        global_feat = self.backbone(tokens, xyz)   # (B, trans_dim)
+        # Backbone params frozen via requires_grad=False;
+        # torch.no_grad() removed so gradients flow to adapters.
 
         # E: Output Head
         return self.output_head(global_feat)               # (B, embed_dim)
