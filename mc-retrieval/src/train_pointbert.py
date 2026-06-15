@@ -88,7 +88,7 @@ def train_one_epoch(
             scaler.unscale_(optimizer)
             all_params = list(model.parameters()) + list(criterion.parameters())
             nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
-            scaler.step(optimizer)
+            optimizer.step()
             scaler.update()
         else:
             loss.backward()
