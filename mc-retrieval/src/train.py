@@ -105,19 +105,6 @@ def train(cfg: dict, pretrained_path: str = None):
     # --- model ---
     model = DualEncoder(cfg, num_block_types=num_blocks).to(device)
     
-    if cfg["model"].get("semantic_init", False):
-        from model import apply_semantic_init
-        apply_semantic_init(
-            voxel_embedding_layer=model.voxel_encoder.block_embedding,
-            text_encoder=model.text_encoder,
-            block_names=block_names,
-            block_embed_dim=cfg["model"]["block_embed_dim"],
-            device=device
-        )
-    criterion = CLIPLoss(
-        temperature_init=cfg["training"]["temperature_init"]
-    ).to(device)
-
     # --- load pretrained voxel encoder weights ---
     if pretrained_path and os.path.exists(pretrained_path):
         print(f"Loading pretrained voxel encoder from {pretrained_path}")
@@ -130,6 +117,20 @@ def train(cfg: dict, pretrained_path: str = None):
         print(f"  Loaded pretrained weights — missing: {len(missing)}, unexpected: {len(unexpected)}")
         if missing:
             print(f"  Missing keys (will train from scratch): {missing}")
+
+    if cfg["model"].get("semantic_init", False):
+        from model import apply_semantic_init
+        apply_semantic_init(
+            voxel_embedding_layer=model.voxel_encoder.block_embedding,
+            text_encoder=model.text_encoder,
+            block_names=block_names,
+            block_embed_dim=cfg["model"]["block_embed_dim"],
+            device=device
+        )
+        
+    criterion = CLIPLoss(
+        temperature_init=cfg["training"]["temperature_init"]
+    ).to(device)
 
     # count params
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
