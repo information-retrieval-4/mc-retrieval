@@ -129,9 +129,9 @@ def train(cfg: dict, pretrained_path: str = None):
     # --- optimizer ---
     train_cfg = cfg["training"]
     param_groups = [
-        {"params": model.voxel_encoder.parameters(), "lr": train_cfg["lr_voxel"]},
-        {"params": model.text_encoder.project.parameters(), "lr": train_cfg["lr_text_proj"]},
-        {"params": criterion.parameters(), "lr": train_cfg["lr_voxel"]},
+        {"params": list(model.voxel_encoder.parameters()), "lr": train_cfg["lr_voxel"]},
+        {"params": list(model.text_encoder.project.parameters()), "lr": train_cfg["lr_text_proj"]},
+        {"params": list(criterion.parameters()), "lr": train_cfg["lr_voxel"]},
     ]
     optimizer = AdamW(param_groups, weight_decay=train_cfg["weight_decay"])
 

@@ -651,27 +651,27 @@ class DualEncoderPointBERT(nn.Module):
         ve = self.voxel_encoder
         groups = [
             # Input Adapter — selalu trainable
-            {"params": ve.block_embedding.parameters(),  "lr": lr_adapter, "name": "block_embed"},
-            {"params": ve.input_projection.parameters(), "lr": lr_adapter, "name": "input_proj"},
+            {"params": list(ve.block_embedding.parameters()),  "lr": lr_adapter, "name": "block_embed"},
+            {"params": list(ve.input_projection.parameters()), "lr": lr_adapter, "name": "input_proj"},
             # CLS token, CLS pos, pos_embed — selalu trainable
             {"params": [ve.backbone.cls_token,
                         ve.backbone.cls_pos],            "lr": lr_adapter, "name": "cls_tokens"},
-            {"params": ve.backbone.pos_embed.parameters(),"lr": lr_adapter,"name": "pos_embed"},
+            {"params": list(ve.backbone.pos_embed.parameters()),"lr": lr_adapter,"name": "pos_embed"},
             # Output head — selalu trainable
-            {"params": ve.output_head.parameters(),      "lr": lr_head,    "name": "output_head"},
+            {"params": list(ve.output_head.parameters()),      "lr": lr_head,    "name": "output_head"},
             # Text projection
-            {"params": self.text_encoder.project.parameters(), "lr": lr_text, "name": "text_proj"},
+            {"params": list(self.text_encoder.project.parameters()), "lr": lr_text, "name": "text_proj"},
         ]
 
         # Backbone TransformerEncoder blocks — hanya Plan 1
         if not pb_cfg.get("freeze_backbone", True):
             groups.append({
-                "params": ve.backbone.blocks.parameters(),
+                "params": list(ve.backbone.blocks.parameters()),
                 "lr"    : lr_backbone,
                 "name"  : "transformer_blocks",
             })
             groups.append({
-                "params": ve.backbone.norm.parameters(),
+                "params": list(ve.backbone.norm.parameters()),
                 "lr"    : lr_backbone,
                 "name"  : "transformer_norm",
             })

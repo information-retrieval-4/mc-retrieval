@@ -217,7 +217,7 @@ def train(cfg: dict, warmstart_path: str = None):
 
     # Add CLIPLoss temperature to optimizer (always trainable)
     param_groups.append({
-        "params": criterion.parameters(),
+        "params": list(criterion.parameters()),
         "lr": tr_cfg.get("lr_adapter", 3e-4),
         "name": "temperature",
     })
