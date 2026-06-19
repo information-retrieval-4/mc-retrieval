@@ -81,6 +81,42 @@ def build_block_mapping(voxel_series: pd.Series, max_types: int = 256):
     return mapping
 
 
+def extract_block_names(df: pd.DataFrame, block_mapping: dict) -> list[str]:
+    """Extract string names for each raw ID in the block_mapping."""
+    raw_id_to_name = {0: "air"}
+    
+    needed_ids = set(block_mapping.keys())
+    needed_ids.remove(0)
+    
+    if "voxel_name_data" not in df.columns:
+        return ["unknown block"] * len(block_mapping)
+        
+    for _, row in df.iterrows():
+        vd = np.asarray(row["voxel_data"]).flatten()
+        vnd = np.asarray(row["voxel_name_data"]).flatten()
+        
+        for i in range(len(vd)):
+            raw_id = vd[i]
+            if raw_id in needed_ids and raw_id not in raw_id_to_name:
+                raw_id_to_name[raw_id] = vnd[i]
+                
+            if len(raw_id_to_name) == len(block_mapping):
+                break
+        if len(raw_id_to_name) == len(block_mapping):
+            break
+            
+    compact_id_to_name = {compact_id: "unknown block" for compact_id in block_mapping.values()}
+    compact_id_to_name[1] = "unknown block" # <rare>
+    for raw_id, compact_id in block_mapping.items():
+        if raw_id in raw_id_to_name:
+            name = str(raw_id_to_name[raw_id]).replace("_", " ")
+            if not name.endswith("block") and name != "air":
+                name += " block"
+            compact_id_to_name[compact_id] = name
+            
+    return [compact_id_to_name[i] for i in range(len(compact_id_to_name))]
+
+
 def remap_voxel(voxel_flat, mapping: dict, crop_bbox: bool = True,
                 target_size: int = 32) -> torch.LongTensor:
     """Remap flat numeric voxel array, optionally crop bbox and resize."""
@@ -335,10 +371,11 @@ def create_dataloaders(
       top_k_materials      : number of dominant materials to append
 
     Returns:
-        train_loader, val_loader, test_loader, block_mapping, num_block_types
+        train_loader, val_loader, test_loader, block_mapping, num_block_types, block_names
 
     Note: When use_name_vocab=True, block_mapping contains key
     '__index_to_name__' (list[str]) needed by Strategy 2 semantic embedding init.
+    block_names is a list[str] of length num_block_types mapping compact_id → name.
     """
     data_cfg = cfg["data"]
     path = parquet_path or data_cfg["parquet_path"]
@@ -380,6 +417,12 @@ def create_dataloaders(
         print(f"  Numeric ID vocab: {max_types} types")
 
     num_block_types = max_types
+
+    # Build block_names list (compact_id → human-readable name)
+    if use_name_vocab:
+        block_names = block_mapping.get("__index_to_name__", ["unknown"] * num_block_types)
+    else:
+        block_names = extract_block_names(df, block_mapping)
 
     # --- splits -------------------------------------------------------------
     seed      = data_cfg["seed"]
@@ -457,4 +500,4 @@ def create_dataloaders(
         pin_memory=True,
     )
 
-    return train_loader, val_loader, test_loader, block_mapping, num_block_types
+    return train_loader, val_loader, test_loader, block_mapping, num_block_types, block_names

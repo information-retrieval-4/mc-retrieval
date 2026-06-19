@@ -148,7 +148,7 @@ def evaluate(cfg: dict, checkpoint_path: str = None):
     ckpt = load_checkpoint(checkpoint_path, device)
 
     # rebuild data loaders
-    _, _, test_loader, block_mapping, num_blocks = create_dataloaders(cfg)
+    _, _, test_loader, block_mapping, num_blocks, _ = create_dataloaders(cfg)
 
     # rebuild model — use PointBERT if config has pointbert section
     if "pointbert" in cfg:

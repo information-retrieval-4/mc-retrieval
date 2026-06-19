@@ -163,7 +163,7 @@ def train(cfg: dict, warmstart_path: str = None):
     print(f"AMP    : {'enabled' if use_amp else 'disabled (CPU)'}\n")
 
     # ── Data ───────────────────────────────────────────────────────────────
-    train_loader, val_loader, test_loader, block_mapping, num_blocks = \
+    train_loader, val_loader, test_loader, block_mapping, num_blocks, _ = \
         create_dataloaders(cfg)
 
     # ── Model ──────────────────────────────────────────────────────
