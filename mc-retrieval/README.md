@@ -1,47 +1,145 @@
 # Minecraft Schematic Retrieval (`mc-retrieval`)
 
-This is the core codebase for the Minecraft Schematic Retrieval system. The system maps text queries (natural language) and 3D voxel representations of structures into a unified semantic space using a CLIP-style Dual-Encoder architecture.
+Cross-modal retrieval system that maps natural language queries and 3D voxel Minecraft structures into a shared semantic embedding space using a CLIP-style Dual Encoder.
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```text
 mc-retrieval/
-├── configs/                  # Configuration YAML files (both CNN and Point-BERT baselines/experiments)
-├── data/                     # Location for dataset parquet files
-├── src/                      # Source Code
-│   ├── dataset.py            # Preprocessing & loader for old (numeric) and new (voxel names) parquets
-│   ├── model.py              # CNN-based dual-encoder models
-│   ├── model_pointbert.py    # Point-BERT-based dual-encoder models
-│   ├── train.py              # CNN training loop
-│   ├── train_pointbert.py    # Point-BERT training loop
-│   ├── evaluate.py           # Evaluation script for retrieval metrics (Recall@K, MRR)
-│   ├── baselines.py          # TF-IDF, Random, and non-deep retrieval baselines
-│   └── utils.py              # Utility helper functions
-├── requirements.txt          # Python packages list
-└── README_POINTBERT.md       # Point-BERT custom semantic enhancement strategies documentation
+├── configs/                   # YAML configs for all experiments
+│   ├── default.yaml           # CNN baseline
+│   ├── pointbert.yaml         # Point-BERT frozen backbone
+│   ├── pb_s1s2_semantic_init.yaml   # Point-BERT + S1 + S2
+│   ├── pb_s1s2s3_all.yaml           # Point-BERT + S1 + S2 + S3
+│   └── pointbert_finetune.yaml      # Point-BERT full fine-tune
+├── data/                      # Parquet dataset files (not committed)
+├── src/
+│   ├── dataset.py             # Preprocessing, dataloaders, augmentation
+│   ├── model.py               # CNN-based dual encoder
+│   ├── model_pointbert.py     # Point-BERT dual encoder
+│   ├── train.py               # CNN training loop
+│   ├── train_pointbert.py     # Point-BERT training loop
+│   ├── pretrain.py            # Masked Voxel Modeling (MVM) pretraining
+│   ├── evaluate.py            # Recall@K, MRR evaluation (auto-detects backend)
+│   ├── baselines.py           # TF-IDF, Random, unimodal baselines
+│   ├── retrieval_demo.py      # Interactive text→voxel retrieval demo
+│   ├── export_texts.py        # Export text inputs to CSV for inspection
+│   ├── visualize.py           # Result visualizations
+│   └── utils.py               # Shared utilities
+├── requirements.txt
+├── README.md                  # This file
+└── README_POINTBERT.md        # Detailed Point-BERT strategy documentation
 ```
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
-### 1. Installation
-Install the required packages in your local environment or inside Google Colab:
+### Installation
 ```bash
-pip install -r requirements.txt
+pip install -r mc-retrieval/requirements.txt
 ```
 
-### 2. Prepare Checkpoints & Data
-- Place the Minecraft dataset parquet files inside the `data/` folder.
-- If using Point-BERT, download the pretrained weights `Point-BERT.pth` and place them under `checkpoints/Point-BERT.pth`.
+### Data
+Place dataset parquet files in `mc-retrieval/data/`:
+- `data.parquet` — numeric block IDs (CNN path)
+- `data_with_voxel_names_multiview_image.parquet` — string block names (Point-BERT S1/S2/S3)
+
+### Point-BERT Weights
+Download `Point-BERT.pth` from the [Point-BERT GitHub](https://github.com/lulutang0608/Point-BERT) and place it at `mc-retrieval/checkpoints/Point-BERT.pth`.
 
 ---
 
-## 🧪 Experiments and Ablation Studies
+## Training
 
-We have implemented three semantic enhancement strategies under the Point-BERT setup to utilize human-readable voxel string names.
+All commands run from `mc-retrieval/`.
 
-For a full breakdown of the strategies, config combinations, and commands to run these experiments, see the dedicated documentation:
-* **[Point-BERT Semantics Enhancement Documentation](file:///C:/Users/farha/Desktop/semester%206/FP-IR/uni-ir/mc-retrieval/README_POINTBERT.md)**
+### CNN path
+```bash
+# Plain CNN baseline
+python src/train.py --config configs/default.yaml
+
+# With MVM pretrained voxel encoder
+python src/train.py --config configs/default.yaml \
+    --pretrained checkpoints/pretrained_voxel.pt
+```
+
+### Point-BERT path
+```bash
+# Frozen backbone (recommended starting point)
+python src/train_pointbert.py --config configs/pointbert.yaml
+
+# With semantic strategies S1+S2
+python src/train_pointbert.py --config configs/pb_s1s2_semantic_init.yaml
+
+# With all strategies S1+S2+S3
+python src/train_pointbert.py --config configs/pb_s1s2s3_all.yaml
+
+# Full fine-tune warm-started from Plan 2 checkpoint
+python src/train_pointbert.py --config configs/pointbert_finetune.yaml \
+    --warmstart checkpoints/pointbert_plan2/best.pt
+```
+
+### MVM Pretraining (CNN only)
+```bash
+python src/pretrain.py --config configs/default.yaml
+```
+
+---
+
+## Evaluation
+```bash
+# evaluate.py auto-detects CNN vs Point-BERT from config
+python src/evaluate.py --config configs/pb_s1s2s3_all.yaml \
+    --checkpoint checkpoints/pb_s1s2s3_all/best_model.pth
+```
+
+Reports **Recall@1/5/10** and **MRR** for text→voxel and voxel→text, plus category-level breakdown.
+
+---
+
+## Architecture
+
+Both encoders project into a shared **256-dim L2-normalized** space. Loss: symmetric InfoNCE (CLIPLoss).
+
+### Text Encoder
+`all-MiniLM-L6-v2` (frozen, 22M params) → Linear projection head (trainable, 384→256→256).
+
+### Voxel Encoder — CNN path (`model.py`)
+`Embedding(256, 32)` → 3D Conv stack `[64, 128, 256]` → MLP(256). Optional MVM pretraining warm-start.
+
+### Voxel Encoder — Point-BERT path (`model_pointbert.py`)
+1. `VoxelToPoints`: 32³ grid → 512 sparse non-air points
+2. `nn.Embedding(672, 64)`: block ID → 64-dim features
+3. Concat xyz(3) + block_feats(64) → `input_proj` Linear(67→384)
+4. 12-layer frozen Point-BERT Transformer (384-dim, pretrained on ShapeNet55)
+5. `output_head` Linear(384→256)
+
+Trainable params: ~653K / 44M total.
+
+---
+
+## Semantic Enhancement Strategies (Point-BERT only)
+
+| Config flag | Strategy | Effect |
+|---|---|---|
+| `use_name_vocab: true` | S1 | Vocabulary from block name strings instead of opaque numeric IDs |
+| `use_semantic_init: true` | S2 | Block embeddings initialized from MiniLM encodings of block names |
+| `use_material_context: true` | S3 | Top-K dominant block names appended to text query at training time |
+
+---
+
+## Key Results (CNN Path)
+
+Best config: **+Bbox Crop + MVM Pretrain + Augmentation**
+
+| Metric | Baseline | +Crop+Pretrain+Aug |
+|---|---|---|
+| Text→Voxel R@1 | 0.84% | **4.20%** |
+| Text→Voxel R@10 | 17.65% | **25.21%** |
+| Text→Voxel MRR | 0.0632 | **0.1105** |
+| Cat P@1 (T→V) | 39.62% | **51.62%** |
+
+See [`idea-explainer/full_results.md`](idea-explainer/full_results.md) for full ablation tables.
