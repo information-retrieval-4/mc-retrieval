@@ -1,6 +1,0 @@
-numpy
-opencv-python
-PyWavelets
-scipy
-Pillow
-matplotlib
