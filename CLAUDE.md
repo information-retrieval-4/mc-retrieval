@@ -4,13 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-This is a Minecraft Schematic Retrieval research project with two components:
-- **`mc-retrieval/`** — Main system: maps natural language queries and 3D voxel Minecraft structures into a shared semantic embedding space using a CLIP-style Dual Encoder. This is the active focus.
-- **`cbir-thing/`** — Separate content-based image retrieval experiment (standalone).
+Minecraft Schematic Retrieval research project. Maps natural language queries and 3D voxel Minecraft structures into a shared semantic embedding space using a CLIP-style Dual Encoder. All active code is in `mc-retrieval/`; `cbir-thing/` is a separate, standalone CBIR experiment.
 
 ## Commands
 
-All scripts are run from within `mc-retrieval/`. Install dependencies first:
+All scripts run from within `mc-retrieval/`. Install dependencies first:
 
 ```bash
 pip install -r mc-retrieval/requirements.txt
@@ -21,16 +19,19 @@ pip install -r mc-retrieval/requirements.txt
 # CNN-based baseline
 python src/train.py --config configs/default.yaml
 
-# Point-BERT (frozen backbone — recommended starting point)
+# Point-BERT frozen backbone (Plan 2 — recommended starting point)
 python src/train_pointbert.py --config configs/pointbert.yaml
 
 # Point-BERT with semantic strategies
 python src/train_pointbert.py --config configs/pb_s1s2_semantic_init.yaml
 python src/train_pointbert.py --config configs/pb_s1s2s3_all.yaml
 
-# Warm-start Point-BERT fine-tune from a Plan 2 checkpoint
+# Full fine-tune warm-started from Plan 2 checkpoint (Plan 1)
 python src/train_pointbert.py --config configs/pointbert_finetune.yaml \
     --warmstart checkpoints/pointbert_plan2/best.pt
+
+# MVM self-supervised pretraining (CNN path only)
+python src/pretrain.py --config configs/default.yaml
 ```
 
 ### Evaluation
@@ -57,40 +58,67 @@ python src/retrieval_demo.py --config configs/pb_s1s2s3_all.yaml \
 
 ## Architecture
 
-### Dual-Encoder (CLIP-style)
-Both encoders project into a shared **256-dim L2-normalized** space. Training uses symmetric InfoNCE (CLIPLoss).
+### Shared Embedding Space
+Both encoders project into a **256-dim L2-normalized** space. Training uses symmetric InfoNCE (`CLIPLoss` in `losses.py`) with a learnable temperature clamped to [0.01, 1.0].
 
-**Text Encoder**: `all-MiniLM-L6-v2` (frozen, 22M params) → Linear projection head (trainable, 384→256→256).
+### Text Encoder (`model.py:TextEncoder`)
+`all-MiniLM-L6-v2` (frozen, 22M params) → two-layer projection head (384→256→256, GELU). Gradients only flow through the projection head.
 
-**Voxel Encoder (Point-BERT path)**:
-1. `VoxelToPoints`: 32³ grid → 512 sparse non-air points (FPS during eval, random during train)
-2. `nn.Embedding(672, 64)`: block ID → 64-dim features (trainable; optionally semantic-initialized)
-3. Concat xyz(3) + block_feats(64) → `input_proj` Linear(67→384) (trainable)
-4. 12-layer frozen Point-BERT Transformer (384-dim, 6-head; pretrained on ShapeNet55)
-5. `output_head` Linear(384→256) (trainable)
+### Voxel Encoder — Two Backends
 
-Total trainable params: ~653K out of ~44M total.
+**Point-BERT path** (`model_pointbert.py`) — active research focus:
+1. `VoxelToPoints`: 32³ grid → 512 sparse non-air points. Random sampling during training; FPS (farthest point sampling) during eval.
+2. `nn.Embedding(vocab_size, 64)`: block ID/name → 64-dim feature (trainable; optionally semantic-initialized via S2).
+3. `input_projection` Linear+LN+GELU+Linear (67→384): concatenated `[xyz(3) ∥ block_feat(64)]` → transformer token.
+4. `PointBERTTransformer`: 12-layer Transformer (384-dim, 6-head). **Critical detail**: positional embeddings are added at every layer (`x = block(x + pos)`), matching the original Point-BERT implementation exactly.
+5. `output_head` Linear (384→256).
 
-**Voxel Encoder (CNN path)**: `model.py` — block embedding → 3D Conv stack → projection (full alternative to Point-BERT).
+**Plan 2** (`freeze_backbone: true`): only ~653K params train (adapter + head). **Plan 1** (`freeze_backbone: false`): full fine-tune with discriminative LRs (adapter 3e-4 >> backbone 5e-6).
 
-### Data
-- Two parquet formats: `data.parquet` (numeric block IDs) and `data_with_voxel_names_multiview_image.parquet` (string block names, needed for Strategies 1–3).
-- 8,328 samples, split 80/10/10 (train/val/test).
-- `dataset.py` handles both formats; the `use_name_vocab` / `use_material_context` flags in config select the strategy.
+**CNN path** (`model.py:VoxelEncoder`) — baseline/MVM pretraining:
+Block embedding → 3D Conv stack with BatchNorm/GELU/Dropout/MaxPool → AdaptiveAvgPool3d(1) → projection. Supports depthwise-separable convolutions and a learned stem.
 
 ### Semantic Enhancement Strategies (Point-BERT only)
-| Flag in config | Strategy | Effect |
+
+| Config flag | Strategy | Effect |
 |---|---|---|
-| `use_name_vocab: true` | S1 | Vocabulary built from block names instead of IDs |
-| `use_semantic_init: true` | S2 | Block embeddings initialized from MiniLM encodings; cached under `checkpoints/cache/block_emb_{md5}.npy` |
-| `use_material_context: true` | S3 | Top-K dominant block names appended to text query |
+| `data.use_name_vocab: true` | S1 | Vocab built from block name strings instead of numeric IDs |
+| `model.use_semantic_init: true` | S2 | `block_embedding` initialized from MiniLM encodings of block names; cached under `checkpoints/cache/block_emb_{md5}.npy` |
+| `data.use_material_context: true` | S3 | Top-K dominant block names appended to text: `"[Materials: spruce_log, oak_planks, ...]"` |
+
+S2 requires S1 (`__index_to_name__` key in `block_mapping`) to know which name maps to which compact ID.
+
+### Data Pipeline (`dataset.py`)
+- Two parquet formats: `data.parquet` (numeric IDs in `voxel_data`) and `data_with_voxel_names_multiview_image.parquet` (string names in `voxel_name_data`; needed for S1–S3).
+- 8,328 samples, split 80/10/10 (train/val/test) via fixed seed.
+- Text: `title + subtitle + description + tags` concatenated, HTML-stripped. S3 appends a materials suffix.
+- Voxel preprocessing: remap IDs → compact indices, optional bbox crop + resize to 32³ (scipy zoom), optional augmentation (random 90° horizontal rotation + block dropout).
+- Bbox cropping is the single highest-impact preprocessing step (4.4× R@1 improvement in ablations, driven by ~12× increase in input density).
+
+### Checkpoint Format
+Saved by `utils.save_checkpoint` as a dict with keys: `epoch`, `model_state`, `criterion_state`, `optimizer_state`, `val_loss`, `block_mapping`, `cfg`. The `block_mapping` must be saved alongside the model because it encodes the vocabulary built from training data.
+
+Point-BERT pretrained weights (`Point-BERT.pth`) must be downloaded separately from the [Point-BERT GitHub repo](https://github.com/Julie-tang00/Point-BERT) and placed at the path specified by `pointbert.pretrained_path` in the config. The checkpoint loader strips `module.` prefixes, extracts the `transformer_q` branch, and remaps keys to match `PointBERTTransformer`'s structure; the `encoder` (PointNet group encoder) is deliberately skipped since the project uses a custom `InputAdapter` instead.
 
 ### Key Config Fields
-Configs live in `mc-retrieval/configs/`. Important fields:
-- `data.parquet_path` — path to dataset file
-- `pointbert.pretrained_path` — path to `Point-BERT.pth` (download from Point-BERT GitHub)
-- `pointbert.freeze_backbone` — `true` for Plan 2 (adapter-only), `false` for full fine-tune
-- `training.checkpoint_dir` — where checkpoints are saved
+Configs in `mc-retrieval/configs/`:
+- `data.parquet_path` — which parquet file to load
+- `pointbert.pretrained_path` — path to `Point-BERT.pth`
+- `pointbert.freeze_backbone` — `true` = Plan 2, `false` = Plan 1
+- `training.checkpoint_dir` — where `best.pt` and `last.pt` are saved
+- `training.use_amp` — mixed precision (only active on CUDA)
 
 ### Metrics
-Evaluation reports **Recall@1/5/10** and **MRR** for text→voxel and voxel→text retrieval, plus category-level breakdown.
+`evaluate.py` reports two levels of metrics on the **test set** (833 samples, fixed seed=42, never seen during training):
+
+- **Instance-level**: query[i] must retrieve exactly gallery[i] — the paired sample. Rank computed against all 833 candidates.
+- **Category-level**: a retrieved item is "relevant" if it shares the same `subtitle` column value as the query. 15 categories total (e.g. `"Land Structure Map"`, `"3D Art Map"`, `"Redstone Device Map"`). Category precision@k = fraction of top-k results that share the query's category.
+
+`--checkpoint` defaults to `{training.checkpoint_dir}/best.pt` if omitted.
+
+**Known results (test set, 833 samples):**
+
+| Config | T→V R@1 | T→V R@10 | T→V MRR | Cat P@1 |
+|---|---|---|---|---|
+| CNN + crop + pretrain + aug | 4.20% | 25.21% | 0.1105 | 51.62% |
+| Point-BERT S1+S2 (Plan 2) | **6.12%** | **30.73%** | **0.1421** | **51.26%** |

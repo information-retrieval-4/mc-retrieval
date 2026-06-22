@@ -317,9 +317,12 @@ class SchematicDataset(Dataset):
         use_name_vocab: bool = False,
         use_material_context: bool = False,
         top_k_materials: int = 5,
+        text_column: str = None,
     ):
-        # Build text — with or without material context (Strategy 3)
-        if use_material_context and "voxel_name_data" in df.columns:
+        # Build text — priority: text_column > material_context > default
+        if text_column and text_column in df.columns:
+            self.texts = df[text_column].fillna("").tolist()
+        elif use_material_context and "voxel_name_data" in df.columns:
             self.texts = [
                 build_text_with_materials(row, top_k_materials=top_k_materials)
                 for _, row in df.iterrows()
@@ -384,9 +387,32 @@ def create_dataloaders(
     use_material_context = data_cfg.get("use_material_context", False)
     top_k_materials      = data_cfg.get("top_k_materials",      5)
 
-    # --- load ---------------------------------------------------------------
-    df = pd.read_parquet(path)
-    print(f"Loaded {len(df)} samples from {path}")
+    # --- load (only columns actually needed to save RAM) --------------------
+    import pyarrow.parquet as pq
+    available_cols = set(pq.ParquetFile(path).schema_arrow.names)
+
+    # always need these
+    base_cols = {"subtitle", "title", "description", "tags"}
+
+    # voxel columns — S1 uses voxel_name_data, default uses voxel_data
+    if use_name_vocab and "voxel_name_data" in available_cols:
+        base_cols.add("voxel_name_data")
+    elif not use_name_vocab and "voxel_data" in available_cols:
+        base_cols.add("voxel_data")
+    if use_name_vocab and "voxel_data" not in available_cols:
+        # some parquets only have voxel_name_data
+        pass
+
+    # text_mode: "default" | "cleaned" | "cleaned_aug"
+    text_mode = data_cfg.get("text_mode", "default")
+    if text_mode in ("cleaned", "cleaned_aug") and "cleaned_text" in available_cols:
+        base_cols.add("cleaned_text")
+    if text_mode == "cleaned_aug" and "aug_1" in available_cols:
+        base_cols.add("aug_1")
+
+    load_cols = sorted(base_cols & available_cols)
+    df = pd.read_parquet(path, columns=load_cols)
+    print(f"Loaded {len(df)} samples from {path} (columns: {load_cols})")
 
     # Validate strategy requirements against available columns
     if use_name_vocab and "voxel_name_data" not in df.columns:
@@ -445,7 +471,16 @@ def create_dataloaders(
     aug_apply_prob   = data_cfg.get("aug_apply_prob",   0.5)
     aug_dropout_prob = data_cfg.get("aug_dropout_prob", 0.05)
 
-    dataset_kwargs = dict(
+    # resolve text column per split — aug_1 only for train to avoid leakage
+    if text_mode == "cleaned":
+        train_text_col = val_text_col = "cleaned_text"
+    elif text_mode == "cleaned_aug":
+        train_text_col = "aug_1"
+        val_text_col   = "cleaned_text"
+    else:
+        train_text_col = val_text_col = None
+
+    base_kwargs = dict(
         block_mapping        = block_mapping,
         crop_bbox            = crop_bbox,
         use_name_vocab       = use_name_vocab,
@@ -456,15 +491,16 @@ def create_dataloaders(
     ds_train = SchematicDataset(
         df.iloc[idx_train].reset_index(drop=True),
         augment=augment, aug_apply_prob=aug_apply_prob,
-        aug_dropout_prob=aug_dropout_prob, **dataset_kwargs,
+        aug_dropout_prob=aug_dropout_prob,
+        text_column=train_text_col, **base_kwargs,
     )
     ds_val  = SchematicDataset(
         df.iloc[idx_val].reset_index(drop=True),
-        augment=False, **dataset_kwargs,
+        augment=False, text_column=val_text_col, **base_kwargs,
     )
     ds_test = SchematicDataset(
         df.iloc[idx_test].reset_index(drop=True),
-        augment=False, **dataset_kwargs,
+        augment=False, text_column=val_text_col, **base_kwargs,
     )
 
     # --- loaders ------------------------------------------------------------
