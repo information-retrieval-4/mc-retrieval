@@ -8,7 +8,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
-  parquet_path: "data/data_with_voxel_names_multiview_image.parquet"
+  parquet_path: "data/data_merged_with_text.parquet"
+  text_mode: "cleaned_aug"  # "default" | "cleaned" | "cleaned_aug"
   max_block_types: 672
   text_max_length: 256
   crop_bbox: true
