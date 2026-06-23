@@ -19,45 +19,9 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from dataset import augment_voxel, build_block_mapping, remap_voxel
+from dataset import build_block_mapping, remap_voxel, VoxelOnlyDataset
 from utils import load_config, set_seed, get_device, save_checkpoint
 from model import DepthwiseSeparableConv3d
-
-
-# ---------------------------------------------------------------------------
-# Dataset (voxel-only, no text needed)
-# ---------------------------------------------------------------------------
-
-
-class VoxelOnlyDataset(Dataset):
-    """Dataset that returns only voxel grids for self-supervised pretraining."""
-
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        block_mapping: dict,
-        crop_bbox: bool = True,
-        augment: bool = False,
-        aug_apply_prob: float = 0.5,
-        aug_dropout_prob: float = 0.05,
-    ):
-        self.voxels = df["voxel_data"].tolist()
-        self.block_mapping = block_mapping
-        self.crop_bbox = crop_bbox
-        self.augment = augment
-        self.aug_apply_prob = aug_apply_prob
-        self.aug_dropout_prob = aug_dropout_prob
-
-    def __len__(self):
-        return len(self.voxels)
-
-    def __getitem__(self, idx):
-        voxel = remap_voxel(
-            self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox
-        )
-        if self.augment:
-            voxel = augment_voxel(voxel, self.aug_apply_prob, self.aug_dropout_prob)
-        return voxel
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +63,7 @@ class MaskedVoxelModel(nn.Module):
         num_block_types: int = 256,
         block_embed_dim: int = 32,
         channels: list[int] = [64, 128, 256],
+        embed_dim: int = 256,
         dropout: float = 0.3,
         mask_ratio: float = 0.2,
         use_learned_stem: bool = False,
@@ -184,13 +149,27 @@ class MaskedVoxelModel(nn.Module):
         else:
             self.pred_head = nn.Conv3d(channels[0], num_block_types, 1)
 
-    def forward(self, voxels: torch.LongTensor):
+        # --- SimCLR Head ---
+        self.global_pool = nn.AdaptiveAvgPool3d(1)
+        self.simclr_proj = nn.Sequential(
+            nn.Linear(channels[-1], channels[-1]),
+            nn.GELU(),
+            nn.Linear(channels[-1], embed_dim),
+        )
+
+    def forward(
+        self,
+        voxels: torch.LongTensor,
+        return_simclr: bool = False,
+        return_mvm: bool = True,
+    ):
         """
         Args:
             voxels: (B, 32, 32, 32) original block IDs
         Returns:
-            logits: (B, num_blocks, 32, 32, 32) predictions
-            mask:   (B, 32, 32, 32) bool mask of what was masked
+            logits: (B, num_blocks, 32, 32, 32) predictions (or None if return_mvm=False)
+            mask:   (B, 32, 32, 32) bool mask of what was masked (or None if return_mvm=False)
+            (optional) simclr_emb: (B, embed_dim) if return_simclr is True
         """
         # Create mask and apply
         mask = create_mask(voxels, self.mask_ratio)
@@ -211,6 +190,15 @@ class MaskedVoxelModel(nn.Module):
         e2 = self.enc2(self.pool1(e1))
         bn = self.bottleneck(self.pool2(e2))
 
+        simclr_emb = None
+        if return_simclr:
+            simclr_emb = self.global_pool(bn).flatten(1)
+            simclr_emb = self.simclr_proj(simclr_emb)
+            simclr_emb = nn.functional.normalize(simclr_emb, dim=-1)
+
+        if not return_mvm:
+            return None, None, simclr_emb
+
         # Decoder with skip connections
         d2 = self.up2(bn)
         d2 = self.dec2(torch.cat([d2, e2], dim=1))
@@ -224,6 +212,9 @@ class MaskedVoxelModel(nn.Module):
             logits = self.pred_head(d_stem)
         else:
             logits = self.pred_head(d1)
+
+        if return_simclr:
+            return logits, mask, simclr_emb
 
         return logits, mask
 
@@ -310,6 +301,11 @@ def pretrain(cfg: dict):
     lr = pt_cfg.get("lr", 1e-3)
     ckpt_dir = pt_cfg.get("checkpoint_dir", "checkpoints")
 
+    pretrain_mode = pt_cfg.get("mode", "mvm")  # "mvm", "simclr", "hybrid"
+    mvm_weight = pt_cfg.get("mvm_weight", 1.0)
+    simclr_weight = pt_cfg.get("simclr_weight", 1.0)
+    num_views = 2 if pretrain_mode in ["simclr", "hybrid"] else 1
+
     # --- data (use ALL samples, no splits needed) ---
     df = pd.read_parquet(cfg["data"]["parquet_path"])
     print(f"Loaded {len(df)} samples for pretraining")
@@ -331,6 +327,7 @@ def pretrain(cfg: dict):
         augment=augment,
         aug_apply_prob=aug_apply_prob,
         aug_dropout_prob=aug_dropout_prob,
+        num_views=num_views,
     )
     loader = DataLoader(
         dataset,
@@ -347,6 +344,7 @@ def pretrain(cfg: dict):
         num_block_types=num_blocks,
         block_embed_dim=model_cfg["block_embed_dim"],
         channels=model_cfg["voxel_channels"],
+        embed_dim=model_cfg["embed_dim"],
         dropout=model_cfg.get("dropout", 0.3),
         mask_ratio=mask_ratio,
         use_learned_stem=model_cfg.get("use_learned_stem", False),
@@ -359,23 +357,24 @@ def pretrain(cfg: dict):
     if model_cfg.get("semantic_init", False):
         from dataset import extract_block_names
         from model import TextEncoder, apply_semantic_init
+
         block_names = extract_block_names(df, block_mapping)
         # mask token gets an arbitrary string "mask token"
         block_names.append("mask token")
-        
+
         temp_text_encoder = TextEncoder(
             model_name=model_cfg["text_model"],
             text_hidden_dim=model_cfg["text_hidden_dim"],
             embed_dim=model_cfg["embed_dim"],
-            freeze=True
+            freeze=True,
         ).to(device)
-        
+
         apply_semantic_init(
             voxel_embedding_layer=model.block_embedding,
             text_encoder=temp_text_encoder,
             block_names=block_names,
             block_embed_dim=model_cfg["block_embed_dim"],
-            device=device
+            device=device,
         )
         del temp_text_encoder
         torch.cuda.empty_cache()
@@ -388,9 +387,13 @@ def pretrain(cfg: dict):
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
     # --- training ---
-    print(f"\nStarting MVM pretraining for {epochs} epochs...")
+    print(f"\nStarting {pretrain_mode.upper()} pretraining for {epochs} epochs...")
     print(f"  Mask ratio: {mask_ratio}")
     print(f"  Batch size: {batch_size}")
+    if pretrain_mode in ["simclr", "hybrid"]:
+        from losses import SimCLRLoss
+
+        simclr_criterion = SimCLRLoss(temperature_init=0.1).to(device)
     print()
 
     best_loss = float("inf")
@@ -398,50 +401,114 @@ def pretrain(cfg: dict):
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
+        total_mvm_loss = 0.0
+        total_simclr_loss = 0.0
         total_correct = 0
         total_masked = 0
         num_batches = 0
 
         pbar = tqdm(loader, desc=f"  epoch {epoch:3d}", leave=False)
-        for voxels in pbar:
-            voxels = voxels.to(device)
-
-            logits, mask = model(voxels)
-
-            # Loss only on masked positions
-            # logits: (B, C, 32, 32, 32), targets: (B, 32, 32, 32)
-            loss = F.cross_entropy(logits, voxels, reduction="none")  # (B, 32, 32, 32)
-            loss = (loss * mask.float()).sum() / mask.float().sum().clamp(min=1)
+        for batch in pbar:
+            if num_views == 2:
+                voxels1, voxels2 = batch
+                voxels1, voxels2 = voxels1.to(device), voxels2.to(device)
+            else:
+                voxels = batch.to(device)
 
             optimizer.zero_grad()
+            loss = 0.0
+
+            if pretrain_mode == "mvm":
+                logits, mask = model(voxels)
+                mvm_loss = F.cross_entropy(logits, voxels, reduction="none")
+                mvm_loss = (mvm_loss * mask.float()).sum() / mask.float().sum().clamp(
+                    min=1
+                )
+                loss = mvm_loss
+
+                preds = logits.argmax(dim=1)
+                correct = ((preds == voxels) & mask).sum().item()
+                n_masked = mask.sum().item()
+
+                total_mvm_loss += mvm_loss.item()
+                total_correct += correct
+                total_masked += n_masked
+
+            elif pretrain_mode == "simclr":
+                old_mask_ratio = model.mask_ratio
+                model.mask_ratio = 0.0
+                _, _, z1 = model(voxels1, return_simclr=True, return_mvm=False)
+                _, _, z2 = model(voxels2, return_simclr=True, return_mvm=False)
+                model.mask_ratio = old_mask_ratio
+
+                simclr_loss = simclr_criterion(z1, z2)
+                loss = simclr_loss
+
+                total_simclr_loss += simclr_loss.item()
+
+            elif pretrain_mode == "hybrid":
+                # only run the decoder (MVM) on view 1
+                logits1, mask1, z1 = model(voxels1, return_simclr=True, return_mvm=True)
+                _, _, z2 = model(voxels2, return_simclr=True, return_mvm=False)
+
+                mvm_loss = F.cross_entropy(logits1, voxels1, reduction="none")
+                mvm_loss = (mvm_loss * mask1.float()).sum() / mask1.float().sum().clamp(
+                    min=1
+                )
+
+                simclr_loss = simclr_criterion(z1, z2)
+
+                loss = (mvm_weight * mvm_loss) + (simclr_weight * simclr_loss)
+
+                preds = logits1.argmax(dim=1)
+                correct = ((preds == voxels1) & mask1).sum().item()
+                n_masked = mask1.sum().item()
+
+                total_mvm_loss += mvm_loss.item()
+                total_simclr_loss += simclr_loss.item()
+                total_correct += correct
+                total_masked += n_masked
+
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # Accuracy on masked positions
-            preds = logits.argmax(dim=1)  # (B, 32, 32, 32)
-            correct = ((preds == voxels) & mask).sum().item()
-            n_masked = mask.sum().item()
-
             total_loss += loss.item()
-            total_correct += correct
-            total_masked += n_masked
             num_batches += 1
 
-            acc = correct / max(n_masked, 1)
-            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}")
+            if pretrain_mode == "mvm":
+                acc = correct / max(n_masked, 1)
+                pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}")
+            elif pretrain_mode == "simclr":
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+            else:
+                acc = correct / max(n_masked, 1)
+                pbar.set_postfix(
+                    loss=f"{loss.item():.4f}",
+                    mvm=f"{mvm_loss.item():.3f}",
+                    sim=f"{simclr_loss.item():.3f}",
+                )
 
         scheduler.step()
 
         avg_loss = total_loss / max(num_batches, 1)
-        avg_acc = total_correct / max(total_masked, 1)
+        avg_acc = (
+            total_correct / max(total_masked, 1) if pretrain_mode != "simclr" else 0.0
+        )
         lr_current = optimizer.param_groups[0]["lr"]
 
-        print(
-            f"Epoch {epoch:3d}/{epochs}  "
-            f"loss={avg_loss:.4f}  mask_acc={avg_acc:.4f}  "
-            f"lr={lr_current:.2e}"
-        )
+        if pretrain_mode == "simclr":
+            print(
+                f"Epoch {epoch:3d}/{epochs}  "
+                f"loss={avg_loss:.4f}  "
+                f"lr={lr_current:.2e}"
+            )
+        else:
+            print(
+                f"Epoch {epoch:3d}/{epochs}  "
+                f"loss={avg_loss:.4f}  mask_acc={avg_acc:.4f}  "
+                f"lr={lr_current:.2e}"
+            )
 
         # Save best
         if avg_loss < best_loss:
@@ -469,7 +536,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Pretrain voxel encoder via masked voxel modeling"
     )
-    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--config", type=str, default="configs/cnn_default.yaml")
     args = parser.parse_args()
 
     cfg = load_config(args.config)

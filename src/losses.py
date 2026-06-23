@@ -47,3 +47,36 @@ class CLIPLoss(nn.Module):
         loss_v2t = F.cross_entropy(logits.T, labels)      # voxel → text
 
         return (loss_t2v + loss_v2t) / 2.0
+
+
+class SimCLRLoss(nn.Module):
+    """NT-Xent loss for SimCLR."""
+    def __init__(self, temperature_init: float = 0.1):
+        super().__init__()
+        self.temperature = temperature_init
+
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            z1, z2: (B, D) L2-normalised embeddings
+        Returns:
+            scalar loss
+        """
+        B = z1.size(0)
+        # Concat views: (2B, D)
+        z = torch.cat([z1, z2], dim=0)
+        
+        # Sim matrix: (2B, 2B)
+        sim = torch.matmul(z, z.T) / self.temperature
+        
+        # Labels for positive pairs: 
+        # z1[i] is positive with z2[i], i.e., index i with i+B, and i+B with i
+        labels = torch.arange(B, device=z.device)
+        labels = torch.cat([labels + B, labels], dim=0)
+        
+        # Mask out self-similarity (diagonal)
+        mask = torch.eye(2 * B, device=z.device).bool()
+        sim.masked_fill_(mask, -float("inf"))
+        
+        loss = F.cross_entropy(sim, labels)
+        return loss

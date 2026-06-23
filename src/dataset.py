@@ -294,6 +294,62 @@ def augment_voxel(
 # PyTorch Dataset
 # ---------------------------------------------------------------------------
 
+class VoxelOnlyDataset(Dataset):
+    """Dataset that returns only voxel grids for self-supervised pretraining."""
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        block_mapping: dict,
+        crop_bbox: bool = True,
+        augment: bool = False,
+        aug_apply_prob: float = 0.5,
+        aug_dropout_prob: float = 0.05,
+        num_views: int = 1,
+    ):
+        self.voxels = df["voxel_data"].tolist()
+        self.block_mapping = block_mapping
+        self.crop_bbox = crop_bbox
+        self.augment = augment
+        self.aug_apply_prob = aug_apply_prob
+        self.aug_dropout_prob = aug_dropout_prob
+        self.num_views = num_views
+
+    def __len__(self):
+        return len(self.voxels)
+
+    def _apply_augs(self, voxel):
+        if not self.augment:
+            return voxel
+            
+        import random
+
+        # 1. Random 90-degree rotations in the horizontal plane (assuming axes 0 and 2 are X and Z)
+        k = random.randint(0, 3)
+        if k > 0:
+            voxel = torch.rot90(voxel, k, [0, 2])
+
+        # 2. Block dropout
+        if random.random() < self.aug_apply_prob:
+            non_air_mask = voxel != 0
+            drop_mask = (
+                torch.rand_like(voxel, dtype=torch.float) < self.aug_dropout_prob
+            )
+            voxel[non_air_mask & drop_mask] = 0
+            
+        return voxel
+
+    def __getitem__(self, idx):
+        base_voxel = remap_voxel(
+            self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox
+        )
+        
+        if self.num_views <= 1:
+            return self._apply_augs(base_voxel.clone())
+            
+        return tuple(self._apply_augs(base_voxel.clone()) for _ in range(self.num_views))
+
+
 class SchematicDataset(Dataset):
     """Dataset of (text, voxel, category) tuples for contrastive learning.
 
