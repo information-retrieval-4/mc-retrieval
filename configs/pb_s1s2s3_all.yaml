@@ -41,7 +41,7 @@ model:
 
 pointbert:
   freeze_backbone: true
-  pretrained_type: "vanilla"  # "vanilla" | "ulip"
+  pretrained_type: "vanilla"
   pretrained_path: "checkpoints/Point-BERT.pth"
   trans_dim: 384
   depth: 12
