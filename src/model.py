@@ -465,6 +465,47 @@ class PointBERTTransformer(nn.Module):
             f"[PointBERT] Checkpoint loaded — matched: {loaded}/{len(filtered)}  missing: {len(missing)}  unexpected: {len(unexpected)}"
         )
 
+    def load_ulip_checkpoint(self, ckpt_path: str):
+        """Load PointBERT backbone weights from a ULIP-2 checkpoint.
+
+        ULIP stores the 3D encoder under 'point_encoder' key inside the state dict.
+        We strip that prefix and load only transformer blocks/norm/pos/cls weights.
+        """
+        print(f"[PointBERT] Loading ULIP-2 checkpoint: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+        # ULIP checkpoints are usually {"state_dict": {...}} or flat
+        raw = ckpt.get("state_dict", ckpt)
+        raw = {k.replace("module.", ""): v for k, v in raw.items()}
+
+        # Extract keys under 'point_encoder.' prefix
+        prefix = "point_encoder."
+        base = {k[len(prefix):]: v for k, v in raw.items() if k.startswith(prefix)}
+
+        if not base:
+            # Fallback: try without prefix (some ULIP variants store flat)
+            print("[PointBERT] 'point_encoder' prefix not found, trying flat keys...")
+            base = raw
+
+        keep_prefixes = ("blocks.", "norm.", "cls_token", "cls_pos", "pos_embed.")
+        filtered = {
+            k: v
+            for k, v in base.items()
+            if any(k.startswith(p) for p in keep_prefixes)
+            or k in ("cls_token", "cls_pos")
+        }
+
+        if not filtered:
+            print("[PointBERT] WARNING: Tidak ada kunci ULIP yang cocok! Cek struktur checkpoint.")
+            return
+
+        missing, unexpected = self.load_state_dict(filtered, strict=False)
+        loaded = len(filtered) - len(unexpected)
+        print(
+            f"[PointBERT] ULIP checkpoint loaded — matched: {loaded}/{len(filtered)}  "
+            f"missing: {len(missing)}  unexpected: {len(unexpected)}"
+        )
+
     def forward(self, tokens: torch.Tensor, xyz: torch.Tensor) -> torch.Tensor:
         B = tokens.shape[0]
         pos = self.pos_embed(xyz)
@@ -498,6 +539,7 @@ class MinecraftPointBERTEncoder(nn.Module):
         dropout: float = 0.1,
         freeze_backbone: bool = True,
         pretrained_path: str = None,
+        pretrained_type: str = "vanilla",
         use_fps_eval: bool = True,
     ):
         super().__init__()
@@ -524,7 +566,10 @@ class MinecraftPointBERTEncoder(nn.Module):
         )
 
         if pretrained_path is not None:
-            self.backbone.load_point_bert_checkpoint(pretrained_path)
+            if pretrained_type == "ulip":
+                self.backbone.load_ulip_checkpoint(pretrained_path)
+            else:
+                self.backbone.load_point_bert_checkpoint(pretrained_path)
 
         self.freeze_backbone = freeze_backbone
         self._set_backbone_frozen(freeze_backbone)
@@ -717,6 +762,7 @@ class DualEncoder(nn.Module):
                 dropout=pb_cfg.get("dropout", 0.1),
                 freeze_backbone=pb_cfg.get("freeze_backbone", True),
                 pretrained_path=pb_cfg.get("pretrained_path", None),
+                pretrained_type=pb_cfg.get("pretrained_type", "vanilla"),
                 use_fps_eval=pb_cfg.get("use_fps_eval", True),
             )
         else:
