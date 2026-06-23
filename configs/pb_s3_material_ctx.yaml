@@ -1,15 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Point-BERT — Strategy 1+2: Name Vocab + Semantic Embedding Init (Frozen Backbone)
+# Point-BERT — Strategy 3 Only: Material Context Text Augmentation (Frozen Backbone)
 #
 # Strategi:
-#   - Strategy 1: use_name_vocab=true   → block vocab dari nama string
-#   - Strategy 2: use_semantic_init=true → init block_embedding dari SentenceTransformer
-#   - Strategy 3: OFF
+#   - Strategy 1: OFF (pakai numeric ID vocab biasa)
+#   - Strategy 2: OFF
+#   - Strategy 3: use_material_context=true → append nama blok ke teks
+#
+# Contoh teks yang dihasilkan:
+#   "Medieval Castle ... [Materials: stone_brick, oak_log, glass_pane, ...]"
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
   parquet_path: "data/data_with_voxel_names_multiview_image.parquet"
-  max_block_types: 672
+  max_block_types: 256
   text_max_length: 256
   crop_bbox: true
   augment: true
@@ -19,21 +22,21 @@ data:
   test_split: 0.1
   seed: 42
 
-  # ── Strategy 1 ────────────────────────────────────────────────────────────
-  use_name_vocab: true         # REQUIRED for Strategy 2 to work
-  use_material_context: false  # Strategy 3 OFF
-  top_k_materials: 5
+  # ── Strategy 3: Material Context Text Augmentation ────────────────────────
+  use_name_vocab: false         # Still use numeric IDs for voxel encoding
+  use_material_context: true    # Append top-K block names to text query
+  top_k_materials: 5            # Number of dominant block names to add
 
 model:
+  encoder_type: "pointbert"
   embed_dim: 256
   text_model: "all-MiniLM-L6-v2"
   freeze_text_encoder: true
   text_hidden_dim: 384
   dropout: 0.1
 
-  # ── Strategy 2: Semantic Embedding Init ───────────────────────────────────
-  use_semantic_init: true      # Init block_embedding from block name semantics
-  semantic_init_freeze: false  # Keep block_embedding trainable (fine-tunable)
+  use_semantic_init: false
+  semantic_init_freeze: false
 
 pointbert:
   freeze_backbone: true
@@ -60,7 +63,7 @@ training:
   warmup_ratio: 0.05
   early_stopping_patience: 20
   num_workers: 2
-  checkpoint_dir: "checkpoints/pb_s1s2_semantic_init_512"
+  checkpoint_dir: "checkpoints/pb_s3_material_ctx"
   use_amp: true
 
 eval:

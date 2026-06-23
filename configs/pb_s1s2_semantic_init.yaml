@@ -1,15 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Point-BERT — Strategy 1 Only: Name-Based Block Vocabulary (Frozen Backbone)
+# Point-BERT — Strategy 1+2: Name Vocab + Semantic Embedding Init (Frozen Backbone)
 #
-# Perbedaan dari pointbert.yaml (baseline):
-#   - Pakai parquet baru (dengan voxel_name_data)
-#   - use_name_vocab: true  → Strategy 1 aktif
-#   - use_semantic_init: false, use_material_context: false
+# Strategi:
+#   - Strategy 1: use_name_vocab=true   → block vocab dari nama string
+#   - Strategy 2: use_semantic_init=true → init block_embedding dari SentenceTransformer
+#   - Strategy 3: OFF
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
   parquet_path: "data/data_with_voxel_names_multiview_image.parquet"
-  max_block_types: 256
+  max_block_types: 672
   text_max_length: 256
   crop_bbox: true
   augment: true
@@ -19,24 +19,25 @@ data:
   test_split: 0.1
   seed: 42
 
-  # ── Strategy 1: Name-Based Block Vocabulary ──────────────────────────────
-  use_name_vocab: true        # Use string block names instead of numeric IDs
-  use_material_context: false # Strategy 3 OFF for this ablation
+  # ── Strategy 1 ────────────────────────────────────────────────────────────
+  use_name_vocab: true         # REQUIRED for Strategy 2 to work
+  use_material_context: false  # Strategy 3 OFF
   top_k_materials: 5
 
 model:
+  encoder_type: "pointbert"
   embed_dim: 256
   text_model: "all-MiniLM-L6-v2"
   freeze_text_encoder: true
   text_hidden_dim: 384
   dropout: 0.1
 
-  # ── Strategy 2: Semantic Embedding Init ──────────────────────────────────
-  use_semantic_init: false    # OFF for this ablation (Strategy 1 only)
-  semantic_init_freeze: false
+  # ── Strategy 2: Semantic Embedding Init ───────────────────────────────────
+  use_semantic_init: true      # Init block_embedding from block name semantics
+  semantic_init_freeze: false  # Keep block_embedding trainable (fine-tunable)
 
 pointbert:
-  freeze_backbone: true       # Plan 2: frozen backbone
+  freeze_backbone: true
   pretrained_path: "checkpoints/Point-BERT.pth"
   trans_dim: 384
   depth: 12
@@ -44,7 +45,7 @@ pointbert:
   mlp_ratio: 4.0
   drop_path: 0.1
   num_points: 512
-  block_embed_dim: 64
+  block_embed_dim: 128
   dropout: 0.1
   use_fps_eval: true
 
@@ -60,7 +61,7 @@ training:
   warmup_ratio: 0.05
   early_stopping_patience: 20
   num_workers: 2
-  checkpoint_dir: "checkpoints/pb_s1_name_vocab"
+  checkpoint_dir: "checkpoints/pb_s1s2_semantic_init_512"
   use_amp: true
 
 eval:

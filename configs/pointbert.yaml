@@ -26,6 +26,7 @@ data:
   seed: 42
 
 model:
+  encoder_type: "pointbert"
   embed_dim: 256             # shared embedding space dim (sama dengan baseline)
   # text encoder (tidak berubah dari baseline)
   text_model: "all-MiniLM-L6-v2"

@@ -1,13 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Point-BERT — Strategy 3 Only: Material Context Text Augmentation (Frozen Backbone)
+# Point-BERT — ALL Strategies: S1 + S2 + S3 (Frozen Backbone)
 #
-# Strategi:
-#   - Strategy 1: OFF (pakai numeric ID vocab biasa)
-#   - Strategy 2: OFF
+# Full ablation — semua strategi aktif bersamaan:
+#   - Strategy 1: use_name_vocab=true      → block vocab dari nama string
+#   - Strategy 2: use_semantic_init=true   → init block_embedding dari ST
 #   - Strategy 3: use_material_context=true → append nama blok ke teks
-#
-# Contoh teks yang dihasilkan:
-#   "Medieval Castle ... [Materials: stone_brick, oak_log, glass_pane, ...]"
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
@@ -22,20 +19,24 @@ data:
   test_split: 0.1
   seed: 42
 
-  # ── Strategy 3: Material Context Text Augmentation ────────────────────────
-  use_name_vocab: false         # Still use numeric IDs for voxel encoding
-  use_material_context: true    # Append top-K block names to text query
-  top_k_materials: 5            # Number of dominant block names to add
+  # ── Strategy 1 ────────────────────────────────────────────────────────────
+  use_name_vocab: true
+
+  # ── Strategy 3 ────────────────────────────────────────────────────────────
+  use_material_context: true
+  top_k_materials: 5
 
 model:
+  encoder_type: "pointbert"
   embed_dim: 256
   text_model: "all-MiniLM-L6-v2"
   freeze_text_encoder: true
   text_hidden_dim: 384
   dropout: 0.1
 
-  use_semantic_init: false
-  semantic_init_freeze: false
+  # ── Strategy 2 ────────────────────────────────────────────────────────────
+  use_semantic_init: true
+  semantic_init_freeze: false  # Fine-tunable after semantic init
 
 pointbert:
   freeze_backbone: true
@@ -62,7 +63,7 @@ training:
   warmup_ratio: 0.05
   early_stopping_patience: 20
   num_workers: 2
-  checkpoint_dir: "checkpoints/pb_s3_material_ctx"
+  checkpoint_dir: "checkpoints/pb_s1s2s3_all"
   use_amp: true
 
 eval:
