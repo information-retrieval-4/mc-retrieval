@@ -1,10 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Point-BERT — Strategy 1+2: Name Vocab + Semantic Embedding Init (Frozen Backbone)
+# ULIP-2 PointNeXt — 2K points, ViT-G, Objaverse+ShapeNet
 #
-# Strategi:
-#   - Strategy 1: use_name_vocab=true   → block vocab dari nama string
-#   - Strategy 2: use_semantic_init=true → init block_embedding dari SentenceTransformer
-#   - Strategy 3: OFF
+# Backbone: ULIP-2 pre-trained PointNeXt (arsitektur BERBEDA dari PointBERT)
+# Checkpoint: ULIP-2-PointNeXt-objavserse_shapenet-2KPTS-vit_g-pretrained.pt
+#
+# CATATAN: PointNeXt butuh encoder_type="pointnext" — belum diimplementasi.
+#   File ini untuk referensi/future work.
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
@@ -20,39 +21,30 @@ data:
   test_split: 0.1
   seed: 42
 
-  # ── Strategy 1 ────────────────────────────────────────────────────────────
-  use_name_vocab: true         # REQUIRED for Strategy 2 to work
-  use_material_context: false  # Strategy 3 OFF
+  use_name_vocab: true
+  use_material_context: false
   top_k_materials: 5
 
 model:
-  encoder_type: "pointbert"
+  encoder_type: "pointnext"  # TODO: implement PointNeXt encoder
   embed_dim: 256
   text_model: "all-MiniLM-L6-v2"
   freeze_text_encoder: true
   text_hidden_dim: 384
   dropout: 0.1
 
-  # ── Strategy 2: Semantic Embedding Init ───────────────────────────────────
-  use_semantic_init: true      # Init block_embedding from block name semantics
-  semantic_init_freeze: false  # Keep block_embedding trainable (fine-tunable)
+  use_semantic_init: false   # PointNeXt tidak pakai block_embedding vocab
+  semantic_init_freeze: false
 
-pointbert:
+pointnext:
   freeze_backbone: true
-  pretrained_type: "vanilla"
-  pretrained_path: "checkpoints/Point-BERT.pth"
-  trans_dim: 384
-  depth: 12
-  num_heads: 6
-  mlp_ratio: 4.0
-  drop_path: 0.1
-  num_points: 512
-  block_embed_dim: 128
+  pretrained_type: "ulip"
+  pretrained_path: "checkpoints/ULIP-2-PointNeXt-objavserse_shapenet-2KPTS-vit_g-pretrained.pt"
+  num_points: 2048
   dropout: 0.1
-  use_fps_eval: true
 
 training:
-  batch_size: 128
+  batch_size: 64
   epochs: 100
   weight_decay: 1.0e-2
   lr_adapter: 3.0e-4
@@ -63,7 +55,7 @@ training:
   warmup_ratio: 0.05
   early_stopping_patience: 20
   num_workers: 2
-  checkpoint_dir: "checkpoints/pb_s1s2_semantic_init_512"
+  checkpoint_dir: "checkpoints/ulip2_pointnext"
   use_amp: true
 
 eval:
