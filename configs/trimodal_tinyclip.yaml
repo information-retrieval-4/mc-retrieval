@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 data:
-  parquet_path: "data/data.parquet"
+  parquet_path: "data/data_merged_with_text.parquet"
   max_block_types: 256
   text_max_length: 256
   crop_bbox: true
