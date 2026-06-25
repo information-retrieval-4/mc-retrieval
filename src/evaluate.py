@@ -235,6 +235,22 @@ def evaluate(cfg: dict, checkpoint_path: str = None):
     print("\n  Voxel → Text (category match):")
     for k, v in v2t_cat.items():
         print(f"    {k}: {v:.4f}")
+        
+    if image_embs is not None:
+        i2v_cat = compute_category_metrics(image_embs, voxel_embs, categories, categories, ks=ks)
+        print("\n  Image → Voxel (category match):")
+        for k, v in i2v_cat.items():
+            print(f"    {k}: {v:.4f}")
+
+        v2i_cat = compute_category_metrics(voxel_embs, image_embs, categories, categories, ks=ks)
+        print("\n  Voxel → Image (category match):")
+        for k, v in v2i_cat.items():
+            print(f"    {k}: {v:.4f}")
+            
+        t2i_cat = compute_category_metrics(text_embs, image_embs, categories, categories, ks=ks)
+        print("\n  Text → Image (category match):")
+        for k, v in t2i_cat.items():
+            print(f"    {k}: {v:.4f}")
 
     res = {
         "text_to_voxel": t2v,
@@ -249,6 +265,9 @@ def evaluate(cfg: dict, checkpoint_path: str = None):
         res["image_to_voxel"] = i2v
         res["voxel_to_image"] = v2i
         res["text_to_image"] = t2i
+        res["image_to_voxel_cat"] = i2v_cat
+        res["voxel_to_image_cat"] = v2i_cat
+        res["text_to_image_cat"] = t2i_cat
 
     return res
 
