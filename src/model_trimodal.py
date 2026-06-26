@@ -70,10 +70,10 @@ class CLIPTextEncoder(nn.Module):
         self.proj = _build_proj(clip_out_dim, cfg["model"]["embed_dim"], proj_type)
 
     def forward(self, texts) -> torch.Tensor:
+        device = next(self.parameters()).device
         if isinstance(texts, torch.Tensor):
             # cached path: (B, clip_out_dim) — skip frozen backbone
-            return F.normalize(self.proj(texts), dim=-1)
-        device = next(self.parameters()).device
+            return F.normalize(self.proj(texts.to(device)), dim=-1)
         inputs = self.processor(
             text=texts, padding=True, truncation=True,
             max_length=self.max_length, return_tensors="pt",
