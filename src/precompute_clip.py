@@ -49,6 +49,7 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    cfg["data"]["use_cached_clip"] = False
     set_seed(cfg["training"].get("seed", 42))
     device = get_device()
 
