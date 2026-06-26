@@ -377,7 +377,9 @@ class SchematicDataset(Dataset):
         image_preprocess = None,
         num_views: int = 1,
         clip_cache_path: str = None,
+        load_voxels: bool = True,
     ):
+        self.load_voxels = load_voxels
         # Build text — priority: text_column > material_context > default
         if text_column and text_column in df.columns:
             self.texts = df[text_column].fillna("").tolist()
@@ -425,11 +427,15 @@ class SchematicDataset(Dataset):
 
     def __getitem__(self, idx):
         text = self.texts[idx]
-        voxel = self._remap_fn(
-            self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox
-        )
-        if self.augment:
-            voxel = augment_voxel(voxel, self.aug_apply_prob, self.aug_dropout_prob)
+        if getattr(self, "load_voxels", True):
+            voxel = self._remap_fn(
+                self.voxels[idx], self.block_mapping, crop_bbox=self.crop_bbox
+            )
+            if self.augment:
+                voxel = augment_voxel(voxel, self.aug_apply_prob, self.aug_dropout_prob)
+        else:
+            voxel = torch.zeros(1)
+            
             
         if self.cached_embeddings is not None:
             return text, voxel, self.cached_embeddings[idx], self.categories[idx]
@@ -487,6 +493,7 @@ def create_dataloaders(
     cfg: dict,
     parquet_path: Optional[str] = None,
     image_preprocess = None,
+    load_voxels: bool = True,
 ):
     """Load data, preprocess, split, and return train/val/test DataLoaders.
 
@@ -613,6 +620,7 @@ def create_dataloaders(
         top_k_materials      = top_k_materials,
         image_preprocess     = image_preprocess,
         num_views            = num_views if use_trimodal else 1,
+        load_voxels          = load_voxels,
     )
     
     use_cached_clip = data_cfg.get("use_cached_clip", False)

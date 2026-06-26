@@ -26,7 +26,8 @@ def run_split(clip_model, dataloader, device, split_name, save_path):
                 images = images.view(B * V, C, H, W)
                 
             # encode using frozen clip
-            emb = clip_model.encode_image(images)
+            with torch.amp.autocast(device.type) if hasattr(torch, "amp") else torch.autocast(device.type):
+                emb = clip_model.encode_image(images)
             
             if is_multiview:
                 emb = emb.view(B, V, -1).mean(dim=1)
@@ -57,7 +58,9 @@ def main():
     image_preprocess = model.preprocess
 
     # Get dataloaders
-    train_loader, val_loader, test_loader, _, _, _ = create_dataloaders(cfg, image_preprocess=image_preprocess)
+    train_loader, val_loader, test_loader, _, _, _ = create_dataloaders(
+        cfg, image_preprocess=image_preprocess, load_voxels=False
+    )
 
     # We need unshuffled versions for caching deterministically matching the dataset index!
     def make_unshuffled(loader):
