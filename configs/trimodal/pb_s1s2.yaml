@@ -19,7 +19,7 @@ data:
   renders_base: "data/renders"
   n_views: 12
   n_views_use: 6        # views yg dipakai per sample (evenly spaced, fixed — seperti TriCoLo)
-  image_cache_path: "data/trimodal_image_cache.pt"  # dibangun otomatis saat pertama kali run
+  # image_cache_path: otomatis → data/trimodal_image_cache_6views.pt (override kalau perlu)
   max_block_types: 672
   crop_bbox: true
   augment: true

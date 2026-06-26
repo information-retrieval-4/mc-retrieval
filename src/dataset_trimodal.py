@@ -246,8 +246,13 @@ def create_trimodal_dataloaders(cfg: dict):
 
     processor = CLIPProcessor.from_pretrained(clip_name)
 
-    # --- image cache (optional) ---
-    cache_path = data_cfg.get("image_cache_path")
+    # --- image cache (auto-enabled) ---
+    n_views_use = data_cfg.get("n_views_use", 6)
+    _default_cache = os.path.join(
+        os.path.dirname(os.path.abspath(path)),
+        f"trimodal_image_cache_{n_views_use}views.pt",
+    )
+    cache_path = data_cfg.get("image_cache_path", _default_cache)
     image_cache = None
     if cache_path:
         if not os.path.exists(cache_path):
