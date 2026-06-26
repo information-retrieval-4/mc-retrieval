@@ -187,13 +187,8 @@ def build_scheduler(optimizer, cfg: dict):
 
 
 def _init_semantic_trimodal(model, block_mapping: dict, cfg: dict, device):
-    """Init voxel block_embedding using CLIP text encoder embeddings + PCA.
-
-    Matches fp_ir_4.py approach:
-    - Special tokens (<rare>, <pad>) → "unknown block" for CLIP encoding
-    - torch.pca_lowrank for GPU-native PCA
-    - Scale to std=0.1 to avoid destabilizing early training
-    """
+    """Init voxel block_embedding using CLIP text encoder embeddings + PCA."""
+    from sklearn.decomposition import PCA
     index_to_name = block_mapping["__index_to_name__"]
     ve = model.voxel_encoder
     vocab_size = ve.block_embedding.num_embeddings
@@ -201,33 +196,28 @@ def _init_semantic_trimodal(model, block_mapping: dict, cfg: dict, device):
     print(f"\n[Trimodal Strategy 2] Initializing block_embedding "
           f"(vocab={vocab_size}, dim={block_embed_dim}) via CLIP text encoder...")
 
-    # replace special tokens with "unknown block" for cleaner CLIP encoding
-    _special = {"<rare>", "<pad>", "air"}
-    names = [
-        n if n not in _special else "unknown block"
-        for n in list(index_to_name)[:vocab_size]
-    ]
-
     model.eval()
+    names = list(index_to_name)[:vocab_size]
     batch_sz = 64
     all_embs = []
     with torch.no_grad():
         for i in range(0, len(names), batch_sz):
             chunk = names[i:i + batch_sz]
-            emb = model.encode_text(chunk).cpu().float()
+            emb = model.encode_text(chunk).cpu()
             all_embs.append(emb)
-    all_embs = torch.cat(all_embs, dim=0)  # (vocab_size, embed_dim)
+    all_embs = torch.cat(all_embs, dim=0).float().numpy()
 
-    if all_embs.shape[1] != block_embed_dim:
-        U, S, _ = torch.pca_lowrank(all_embs, q=block_embed_dim)
-        reduced = (U * S)
-    else:
-        reduced = all_embs
+    clip_dim = all_embs.shape[1]
+    if clip_dim != block_embed_dim:
+        pca = PCA(n_components=block_embed_dim)
+        all_embs = pca.fit_transform(all_embs)
 
-    # scale to std=0.1 (same as fp_ir_4.py)
-    reduced = reduced / (reduced.std() + 1e-8) * 0.1
+    init_w = torch.from_numpy(all_embs).float()
+    if init_w.shape[0] < vocab_size:
+        pad = torch.zeros(vocab_size - init_w.shape[0], block_embed_dim)
+        init_w = torch.cat([init_w, pad], dim=0)
 
-    ve.block_embedding.weight.data.copy_(reduced.to(device))
+    ve.block_embedding.weight.data.copy_(init_w)
     if cfg["model"].get("semantic_init_freeze", False):
         ve.block_embedding.weight.requires_grad = False
     model.train()
